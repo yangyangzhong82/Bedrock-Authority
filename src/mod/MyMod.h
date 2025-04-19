@@ -1,8 +1,11 @@
 #pragma once
 
 #include "ll/api/mod/NativeMod.h"
+#include <memory>
+#include "config/Config.h"
+#include "db/IDatabase.h"
 
-namespace my_mod {
+namespace BA {
 
 class MyMod {
 
@@ -28,6 +31,8 @@ public:
 
 private:
     ll::mod::NativeMod& mSelf;
+    BA::config::Config config_;
+    std::unique_ptr<db::IDatabase> db_;
 };
 
 } // namespace my_mod
