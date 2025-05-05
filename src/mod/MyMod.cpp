@@ -4,7 +4,8 @@
 #include "ll/api/Config.h"
 #include "db/DatabaseFactory.h"
 #include <exception>
-
+#include "command/Command.h"
+#include "permission/PermissionManager.h" // 添加 PermissionManager 头文件
 namespace BA {
 
 MyMod& MyMod::getInstance() {
@@ -35,6 +36,17 @@ bool MyMod::load() {
                                                    config_.mysql_port);
         }
         getSelf().getLogger().info("Database '%s' initialized", config_.db_type.c_str());
+
+        // 初始化 PermissionManager
+        if (db_) {
+            permission::PermissionManager::getInstance().init(db_.get()); // 使用 get() 获取原始指针
+            getSelf().getLogger().info("PermissionManager initialized with the database connection.");
+         } else {
+              // 这个分支理论上不应该执行，因为如果 db_ 为空，上面的 catch 会捕获异常
+              getSelf().getLogger().error("Database pointer is null after creation attempt, cannot initialize PermissionManager."); // 使用 error 级别
+              return false; // 阻止加载
+         }
+
     } catch (const std::exception& e) {
         getSelf().getLogger().error("Error initializing database '%s': %s",
             config_.db_type.c_str(), e.what());
@@ -49,6 +61,7 @@ bool MyMod::enable() {
     getSelf().getLogger().info("Enabling mod...");
     // Code for enabling the mod goes here.
     getSelf().getLogger().info("Mod enabled");
+    BA::Command::RegisterCommands();
     return true;
 }
 

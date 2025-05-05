@@ -27,7 +27,8 @@ target("Bedrock-Authority") -- Change this to your mod name.
     add_rules("@levibuildscript/linkrule")
     add_rules("@levibuildscript/modpacker")
     add_cxflags( "/EHa", "/utf-8", "/W4", "/w44265", "/w44289", "/w44296", "/w45263", "/w44738", "/w45204")
-    add_defines("NOMINMAX", "UNICODE")
+    -- Add BA_EXPORTS to enable dllexport/dllimport macros
+    add_defines("NOMINMAX", "UNICODE", "BA_EXPORTS")
     add_packages("levilamina","sqlite3","mysql")
     set_exceptions("none") -- To avoid conflicts with /EHa.
     set_kind("shared")

@@ -1,7 +1,20 @@
 #include "db/MySQLDatabase.h"
 #include <stdexcept>
+#include <string>
+#include <algorithm> // for std::search
+#include <cctype>    // for std::tolower
 #include "ll/api/mod/NativeMod.h"
 #include "ll/api/io/Logger.h"
+
+// 辅助函数：不区分大小写的字符串搜索
+bool containsCaseInsensitive(const std::string& haystack, const std::string& needle) {
+    auto it = std::search(
+        haystack.begin(), haystack.end(),
+        needle.begin(), needle.end(),
+        [](unsigned char ch1, unsigned char ch2) { return std::tolower(ch1) == std::tolower(ch2); }
+    );
+    return (it != haystack.end());
+}
 
 namespace BA {
 namespace db {
@@ -10,21 +23,21 @@ MySQLDatabase::MySQLDatabase(const std::string& host,
                              const std::string& user,
                              const std::string& password,
                              const std::string& database,
-                             unsigned int port)
+                              unsigned int port)
     : conn_(mysql_init(nullptr)) {
     auto& logger = ll::mod::NativeMod::current()->getLogger();
-    logger.info("Initializing MySQL connection to %s:%u db=%s as user %s", host.c_str(), port, database.c_str(), user.c_str());
+    logger.info("正在初始化 MySQL 连接到 %s:%u 数据库=%s 用户=%s", host.c_str(), port, database.c_str(), user.c_str());
     if (conn_ == nullptr) {
-        logger.error("Failed to initialize MySQL connection");
-        throw std::runtime_error("Failed to initialize MySQL connection");
+        logger.error("初始化 MySQL 连接失败");
+        throw std::runtime_error("初始化 MySQL 连接失败");
     }
     if (!mysql_real_connect(conn_, host.c_str(), user.c_str(), password.c_str(), database.c_str(), port, nullptr, 0)) {
         std::string err = mysql_error(conn_);
-        logger.error("Failed to connect to MySQL: %s", err.c_str());
+        logger.error("连接到 MySQL 失败: %s", err.c_str());
         mysql_close(conn_);
-        throw std::runtime_error("Failed to connect to MySQL: " + err);
+        throw std::runtime_error("连接到 MySQL 失败: " + err);
     }
-    logger.info("Connected to MySQL successfully");
+    logger.info("成功连接到 MySQL");
 }
 
 MySQLDatabase::~MySQLDatabase() {
@@ -33,26 +46,43 @@ MySQLDatabase::~MySQLDatabase() {
 
 bool MySQLDatabase::execute(const std::string& sql) {
     auto& logger = ll::mod::NativeMod::current()->getLogger();
-    logger.debug("MySQL execute: %s", sql.c_str());
+    logger.debug("MySQL 执行: {}", sql); // 对 std::string 使用 {}
     if (mysql_query(conn_, sql.c_str()) != 0) {
-        logger.error("MySQL execute error: %s", mysql_error(conn_));
-        return false;
+        unsigned int error_code = mysql_errno(conn_); // 获取错误代码
+        std::string error_msg = mysql_error(conn_); // 获取错误消息
+         // 检查 "Duplicate entry ..." 错误 (ER_DUP_ENTRY - 1062)，通常在 ALTER TABLE 使用默认值创建重复项时发生
+         if (error_code == 1062 && containsCaseInsensitive(sql, "ALTER TABLE")) {
+             logger.warn("MySQL 执行警告 (已忽略 - ALTER TABLE 期间出现重复条目): {}. 语句: {}", error_msg, sql);
+             return true; // 视为成功，假设重复是由添加具有默认值的列引起的
+         // 检查特定的 "Can't drop ..., check that column/key exists" 错误 (ER_CANT_DROP_FIELD_OR_KEY - 1091)
+         } else if (error_code == 1091 && (containsCaseInsensitive(sql, "DROP COLUMN") || containsCaseInsensitive(sql, "DROP FOREIGN KEY") || containsCaseInsensitive(sql, "DROP PRIMARY KEY") || containsCaseInsensitive(sql, "DROP INDEX"))) {
+              logger.warn("MySQL 执行警告 (已忽略 - 删除失败，因为项目不存在): {}. 语句: {}", error_msg, sql);
+              return true; // 视为成功，因为要删除的项目不存在
+         // 检查 ADD COLUMN 期间的 "Duplicate column name" 错误 (ER_DUP_FIELDNAME - 1060)
+         } else if (error_code == 1060 && containsCaseInsensitive(sql, "ADD COLUMN")) {
+             logger.warn("MySQL 执行警告 (已忽略 - ADD COLUMN 期间出现重复列名): {}. 语句: {}", error_msg, sql);
+             return true; // 视为成功，列已存在
+         } else {
+            logger.error("MySQL 执行错误 (代码 {}): {}. 语句: {}", error_code, error_msg, sql); // 记录其他错误
+            return false;
+        }
     }
-    logger.debug("MySQL execute succeeded");
+    logger.debug("MySQL 执行成功");
     return true;
 }
 
 std::vector<std::vector<std::string>> MySQLDatabase::query(const std::string& sql) {
     auto& logger = ll::mod::NativeMod::current()->getLogger();
-    logger.debug("MySQL query: %s", sql.c_str());
+    logger.debug("MySQL 查询: {}", sql); // 对 std::string 使用 {}
     std::vector<std::vector<std::string>> result;
     if (mysql_query(conn_, sql.c_str()) != 0) {
-        logger.error("MySQL query error: %s", mysql_error(conn_));
+        std::string error_msg = mysql_error(conn_); // 先获取错误消息
+        logger.error("MySQL 查询错误: {}", error_msg); // 使用 {} 占位符记录 std::string
         return result;
     }
     MYSQL_RES* res = mysql_store_result(conn_);
     if (res == nullptr) {
-        logger.warn("MySQL query returned no result set");
+        logger.warn("MySQL 查询未返回结果集");
         return result;
     }
     int num_fields = mysql_num_fields(res);
@@ -65,191 +95,200 @@ std::vector<std::vector<std::string>> MySQLDatabase::query(const std::string& sq
         result.push_back(std::move(rowVec));
     }
     mysql_free_result(res);
-    logger.debug("MySQL query returned %zu rows", result.size());
+    logger.debug("MySQL 查询返回 %zu 行", result.size());
     return result;
 }
 
 void MySQLDatabase::close() {
     auto& logger = ll::mod::NativeMod::current()->getLogger();
     if (conn_) {
-        logger.info("Closing MySQL connection");
+        logger.info("正在关闭 MySQL 连接");
         mysql_close(conn_);
         conn_ = nullptr;
-        logger.info("MySQL connection closed");
+        logger.info("MySQL 连接已关闭");
     }
 }
 
 
 bool MySQLDatabase::executePrepared(const std::string& sql, const std::vector<std::string>& params) {
     auto& logger = ll::mod::NativeMod::current()->getLogger();
-    logger.debug("MySQL executePrepared: %s", sql.c_str());
+    logger.debug("MySQL 执行预处理语句: %s", sql.c_str());
 
     MYSQL_STMT* stmt = mysql_stmt_init(conn_);
     if (!stmt) {
-        logger.error("MySQL mysql_stmt_init failed");
+        logger.error("MySQL mysql_stmt_init 失败");
         return false;
     }
 
-    // Explicitly cast sql.length() to unsigned long
+    // 显式转换 sql.length() 为 unsigned long
     if (mysql_stmt_prepare(stmt, sql.c_str(), static_cast<unsigned long>(sql.length())) != 0) {
-        logger.error("MySQL mysql_stmt_prepare failed: %s", mysql_stmt_error(stmt));
+        std::string error_msg = mysql_stmt_error(stmt); // 先获取错误消息
+        logger.error("MySQL mysql_stmt_prepare 失败: {}", error_msg); // 使用 {} 占位符记录 std::string
         mysql_stmt_close(stmt);
         return false;
     }
 
-    // Bind parameters
+    // 绑定参数
     std::vector<MYSQL_BIND> bind(params.size());
-    std::vector<unsigned long> lengths(params.size()); // Store lengths for bind
+    std::vector<unsigned long> lengths(params.size()); // 存储绑定长度
     for (size_t i = 0; i < params.size(); ++i) {
-        bind[i] = {}; // Zero initialize
+        bind[i] = {}; // 零初始化
         bind[i].buffer_type = MYSQL_TYPE_STRING;
-        // Need const_cast because mysql C API is not const-correct
         bind[i].buffer = const_cast<char*>(params[i].c_str());
-        // Explicitly cast params[i].length() to unsigned long
+        // 显式转换 params[i].length() 为 unsigned long
         lengths[i] = static_cast<unsigned long>(params[i].length());
         bind[i].length = &lengths[i];
         bind[i].is_null = 0;
     }
 
     if (mysql_stmt_bind_param(stmt, bind.data()) != 0) {
-        logger.error("MySQL mysql_stmt_bind_param failed: %s", mysql_stmt_error(stmt));
+        logger.error("MySQL mysql_stmt_bind_param 失败: %s", mysql_stmt_error(stmt));
         mysql_stmt_close(stmt);
         return false;
     }
 
-    // Execute
+    // 执行
     if (mysql_stmt_execute(stmt) != 0) {
-        logger.error("MySQL mysql_stmt_execute failed: %s", mysql_stmt_error(stmt));
-        mysql_stmt_close(stmt);
-        return false;
+        unsigned int error_code = mysql_stmt_errno(stmt); // 获取错误代码
+        std::string error_msg = mysql_stmt_error(stmt); // 获取错误消息
+        if (error_code == 1062) { // ER_DUP_ENTRY 表示重复键
+            logger.warn("MySQL executePrepared 重复条目已忽略: {}", error_msg);
+            // 将重复键错误视为 INSERT IGNORE 语义的成功
+            mysql_stmt_close(stmt);
+            return true; // 即使执行因重复而失败，也返回 true
+        } else {
+            logger.error("MySQL mysql_stmt_execute 失败 (代码 {}): {}", error_code, error_msg);
+            mysql_stmt_close(stmt);
+            return false; // 对其他错误返回 false
+        }
     }
 
     mysql_stmt_close(stmt);
-    logger.debug("MySQL executePrepared succeeded");
+    logger.debug("MySQL executePrepared 成功");
     return true;
 }
 
 
 std::vector<std::vector<std::string>> MySQLDatabase::queryPrepared(const std::string& sql, const std::vector<std::string>& params) {
     auto& logger = ll::mod::NativeMod::current()->getLogger();
-    logger.debug("MySQL queryPrepared: %s", sql.c_str());
+    logger.debug("MySQL 查询预处理语句: %s", sql.c_str());
     std::vector<std::vector<std::string>> result;
 
     MYSQL_STMT* stmt = mysql_stmt_init(conn_);
     if (!stmt) {
-        logger.error("MySQL mysql_stmt_init failed");
+        logger.error("MySQL mysql_stmt_init 失败");
         return result;
     }
 
-    // Explicitly cast sql.length() to unsigned long
+    // 显式转换 sql.length() 为 unsigned long
     if (mysql_stmt_prepare(stmt, sql.c_str(), static_cast<unsigned long>(sql.length())) != 0) {
-        logger.error("MySQL mysql_stmt_prepare failed: %s", mysql_stmt_error(stmt));
+        logger.error("MySQL mysql_stmt_prepare 失败: %s", mysql_stmt_error(stmt));
         mysql_stmt_close(stmt);
         return result;
     }
 
-    // Bind parameters
+    // 绑定参数
     std::vector<MYSQL_BIND> param_bind(params.size());
     std::vector<unsigned long> param_lengths(params.size());
     for (size_t i = 0; i < params.size(); ++i) {
         param_bind[i] = {};
         param_bind[i].buffer_type = MYSQL_TYPE_STRING;
         param_bind[i].buffer = const_cast<char*>(params[i].c_str());
-        // Explicitly cast params[i].length() to unsigned long
+        // 显式转换 params[i].length() 为 unsigned long
         param_lengths[i] = static_cast<unsigned long>(params[i].length());
         param_bind[i].length = &param_lengths[i];
         param_bind[i].is_null = 0;
     }
 
     if (mysql_stmt_bind_param(stmt, param_bind.data()) != 0) {
-        logger.error("MySQL mysql_stmt_bind_param failed: %s", mysql_stmt_error(stmt));
+        logger.error("MySQL mysql_stmt_bind_param 失败: %s", mysql_stmt_error(stmt));
         mysql_stmt_close(stmt);
         return result;
     }
 
-    // Execute
+    // 执行
     if (mysql_stmt_execute(stmt) != 0) {
-        logger.error("MySQL mysql_stmt_execute failed: %s", mysql_stmt_error(stmt));
+        logger.error("MySQL mysql_stmt_execute 失败: %s", mysql_stmt_error(stmt));
         mysql_stmt_close(stmt);
         return result;
     }
 
-    // Get result metadata
+    // 获取结果元数据
     MYSQL_RES* meta_result = mysql_stmt_result_metadata(stmt);
     if (!meta_result) {
-        // This can happen for statements like INSERT/UPDATE/DELETE
-        // Check if there's an error or just no result set
+        // 对于 INSERT/UPDATE/DELETE 等语句可能会发生这种情况
+        // 检查是否有错误或只是没有结果集
         if (mysql_stmt_errno(stmt) != 0) {
-             logger.error("MySQL mysql_stmt_result_metadata failed: %s", mysql_stmt_error(stmt));
+             logger.error("MySQL mysql_stmt_result_metadata 失败: %s", mysql_stmt_error(stmt));
         } else {
-             logger.debug("MySQL queryPrepared did not return a result set (e.g., INSERT/UPDATE).");
+             logger.debug("MySQL queryPrepared 未返回结果集 (例如 INSERT/UPDATE)。");
         }
         mysql_stmt_close(stmt);
-        return result; // Return empty result
+        return result; // 返回空结果
     }
 
     int num_fields = mysql_num_fields(meta_result);
 
-    // Bind result buffers
+    // 绑定结果缓冲区
     std::vector<MYSQL_BIND> result_bind(num_fields);
-    std::vector<std::vector<char>> result_buffers(num_fields); // Store data buffers
-    std::vector<unsigned long> result_lengths(num_fields);     // Store actual lengths
-    // Use C arrays of bool to directly match the compiler's expected bool* type
-    bool* is_null_arr = new bool[num_fields]; // Allocate on heap
-    bool* error_arr = new bool[num_fields];   // Allocate on heap
-    // Ensure cleanup even on early exit
+    std::vector<std::vector<char>> result_buffers(num_fields); // 存储数据缓冲区
+    std::vector<unsigned long> result_lengths(num_fields);     // 存储实际长度
+    // 使用 C 数组的 bool 来直接匹配编译器期望的 bool* 类型
+    bool* is_null_arr = new bool[num_fields]; // 在堆上分配
+    bool* error_arr = new bool[num_fields];   // 在堆上分配
+    // 确保即使提前退出也能清理
     auto cleanup = [&]() {
         delete[] is_null_arr;
         delete[] error_arr;
     };
 
     for (int i = 0; i < num_fields; ++i) {
-        // Allocate a reasonable buffer size, e.g., 256 bytes.
-        // For production, might need dynamic resizing or checking field metadata max_length.
+        // 分配一个合理的缓冲区大小，例如 256 字节。
+        // 对于生产环境，可能需要动态调整大小或检查字段元数据的 max_length。
         result_buffers[i].resize(256);
         result_bind[i] = {};
-        result_bind[i].buffer_type = MYSQL_TYPE_STRING; // Fetch everything as string
+        result_bind[i].buffer_type = MYSQL_TYPE_STRING; // 将所有内容作为字符串获取
         result_bind[i].buffer = result_buffers[i].data();
-        // Explicitly cast result_buffers[i].size() to unsigned long
+        // 显式转换 result_buffers[i].size() 为 unsigned long
         result_bind[i].buffer_length = static_cast<unsigned long>(result_buffers[i].size());
         result_bind[i].length = &result_lengths[i];
-        // Assign bool* directly, as types now match
+        // 直接分配 bool*，因为类型现在匹配
         result_bind[i].is_null = &is_null_arr[i];
         result_bind[i].error = &error_arr[i];
     }
 
     if (mysql_stmt_bind_result(stmt, result_bind.data()) != 0) {
-        logger.error("MySQL mysql_stmt_bind_result failed: %s", mysql_stmt_error(stmt));
-        cleanup(); // Clean up allocated memory
+        logger.error("MySQL mysql_stmt_bind_result 失败: %s", mysql_stmt_error(stmt));
+        cleanup(); // 清理已分配的内存
         mysql_free_result(meta_result);
         mysql_stmt_close(stmt);
         return result;
     }
 
-    // Store result to allow fetching
+    // 存储结果以允许获取
     if (mysql_stmt_store_result(stmt) != 0) {
-         logger.error("MySQL mysql_stmt_store_result failed: %s", mysql_stmt_error(stmt));
-         cleanup(); // Clean up allocated memory
+         logger.error("MySQL mysql_stmt_store_result 失败: %s", mysql_stmt_error(stmt));
+         cleanup(); // 清理已分配的内存
          mysql_free_result(meta_result);
          mysql_stmt_close(stmt);
          return result;
     }
 
 
-    // Fetch rows
-    while (mysql_stmt_fetch(stmt) == 0) { // 0 means success
+    // 获取行
+    while (mysql_stmt_fetch(stmt) == 0) { // 0 表示成功
         std::vector<std::string> rowVec;
         rowVec.reserve(num_fields);
         for (int i = 0; i < num_fields; ++i) {
-             // Read from the bool C arrays
-            if (is_null_arr[i]) { // Check the bool value directly
-                rowVec.emplace_back(""); // Or handle NULL as needed
+             // 从 bool C 数组读取
+            if (is_null_arr[i]) { // 直接检查 bool 值
+                rowVec.emplace_back(""); // 或根据需要处理 NULL
             } else {
-                // Check if buffer was too small (though unlikely fetching as string with decent buffer)
-                if (error_arr[i]) { // Check the bool value directly
-                     logger.warn("MySQL fetch truncation/error in column %d", i);
-                     // Handle error, maybe fetch again with larger buffer if needed
-                     rowVec.emplace_back(""); // Placeholder for now
+                // 检查缓冲区是否太小（尽管以字符串方式获取且缓冲区大小适中时不太可能）
+                if (error_arr[i]) { // 直接检查 bool 值
+                     logger.warn("MySQL 获取第 %d 列时发生截断/错误", i);
+                     // 处理错误，如果需要，可能使用更大的缓冲区再次获取
+                     rowVec.emplace_back(""); // 暂时使用占位符
                 } else {
                     rowVec.emplace_back(result_buffers[i].data(), result_lengths[i]);
                 }
@@ -258,22 +297,22 @@ std::vector<std::vector<std::string>> MySQLDatabase::queryPrepared(const std::st
         result.push_back(std::move(rowVec));
     }
 
-    // Check for fetch errors after the loop
+    // 循环后检查获取错误
     if (mysql_stmt_errno(stmt) != 0 && mysql_stmt_errno(stmt) != MYSQL_NO_DATA) {
-         logger.error("MySQL mysql_stmt_fetch failed: %s", mysql_stmt_error(stmt));
-         // Result might be partially filled
+         logger.error("MySQL mysql_stmt_fetch 失败: %s", mysql_stmt_error(stmt));
+         // 结果可能部分填充
     }
 
 
-    // Clean up allocated C arrays
+    // 清理已分配的 C 数组
     cleanup();
 
     mysql_free_result(meta_result);
     mysql_stmt_close(stmt);
-    logger.debug("MySQL queryPrepared returned %zu rows", result.size());
+    logger.debug("MySQL queryPrepared 返回 %zu 行", result.size());
     return result;
 }
 
 
 } // namespace db
-} // namespace my_mod
+} // namespace BA 
