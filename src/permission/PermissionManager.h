@@ -17,6 +17,8 @@
 
 #include <string>
 #include <vector>
+#include <unordered_map> // For cache
+#include <shared_mutex>  // For thread-safe cache access
 #include "db/IDatabase.h"
 
 namespace BA {
@@ -84,11 +86,29 @@ public:
 private:
     PermissionManager() = default;
     void ensureTables(); // 确保表存在
-    // 辅助函数：根据名称从权限表或组表中获取 ID
+
+    // --- 缓存相关 ---
+    // 从缓存或数据库获取组 ID
+    std::string getCachedGroupId(const std::string& groupName);
+    // 使特定组的缓存失效
+    void invalidateGroupCache(const std::string& groupName);
+    // 更新或插入组到缓存
+    void updateGroupCache(const std::string& groupName, const std::string& groupId);
+    // 从数据库加载所有组到缓存（可选，可在 init 时调用）
+    void populateGroupCache();
+    // --- 结束缓存相关 ---
+
+
+    // 辅助函数：根据名称从权限表或组表中获取 ID (现在主要用于 permissions 表)
     std::string getIdByName(const std::string& table, const std::string& name);
 
+
     db::IDatabase* db_ = nullptr;
-};
+    // 组名到组 ID 的缓存
+    std::unordered_map<std::string, std::string> groupNameCache_;
+    // 用于保护缓存访问的读写锁
+    mutable std::shared_mutex cacheMutex_; // mutable 允许在 const 方法中锁定
+}; // <--- 添加缺失的分号
 
 } // namespace permission
 } // namespace BA
