@@ -62,6 +62,10 @@ bool MySQLDatabase::execute(const std::string& sql) {
          } else if (error_code == 1060 && containsCaseInsensitive(sql, "ADD COLUMN")) {
              logger.warn("MySQL 执行警告 (已忽略 - ADD COLUMN 期间出现重复列名): {}. 语句: {}", error_msg, sql);
              return true; // 视为成功，列已存在
+         // 新增：检查 CREATE INDEX 期间的 "Duplicate key name" 错误 (ER_DUP_KEYNAME - 1061)
+         } else if (error_code == 1061 && containsCaseInsensitive(sql, "CREATE INDEX")) {
+             logger.warn("MySQL 执行警告 (已忽略 - CREATE INDEX 期间出现重复索引名): {}. 语句: {}", error_msg, sql);
+             return true; // 视为成功，索引已存在
          } else {
             logger.error("MySQL 执行错误 (代码 {}): {}. 语句: {}", error_code, error_msg, sql); // 记录其他错误
             return false;
@@ -315,4 +319,4 @@ std::vector<std::vector<std::string>> MySQLDatabase::queryPrepared(const std::st
 
 
 } // namespace db
-} // namespace BA 
+} // namespace BA

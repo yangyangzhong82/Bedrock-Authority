@@ -108,7 +108,7 @@ private:
     std::unordered_map<std::string, std::string> groupNameCache_;
     // 用于保护缓存访问的读写锁
     mutable std::shared_mutex cacheMutex_; // mutable 允许在 const 方法中锁定
-}; // <--- 添加缺失的分号
+}; 
 
 } // namespace permission
 } // namespace BA

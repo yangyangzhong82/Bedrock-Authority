@@ -4,6 +4,7 @@
 #include "ll/api/Config.h"
 #include "db/DatabaseFactory.h"
 #include <exception>
+#include "RemoteCallAPI.h"
 #include "command/Command.h"
 #include "permission/PermissionManager.h" // 添加 PermissionManager 头文件
 namespace BA {
@@ -62,6 +63,83 @@ bool MyMod::enable() {
     // Code for enabling the mod goes here.
     getSelf().getLogger().info("Mod enabled");
     BA::Command::RegisterCommands();
+
+    // Export PermissionManager functions using RemoteCall
+    auto& pm = permission::PermissionManager::getInstance();
+    const std::string ns = "BA"; // Namespace for exported functions
+
+    RemoteCall::exportAs(ns, "registerPermission", [&](const std::string& name, const std::string& description, bool defaultValue) {
+        return pm.registerPermission(name, description, defaultValue);
+    });
+    RemoteCall::exportAs(ns, "permissionExists", [&](const std::string& name) {
+        return pm.permissionExists(name);
+    });
+    RemoteCall::exportAs(ns, "getAllPermissions", [&]() {
+        return pm.getAllPermissions();
+    });
+    RemoteCall::exportAs(ns, "createGroup", [&](const std::string& groupName, const std::string& description) {
+        return pm.createGroup(groupName, description);
+    });
+    RemoteCall::exportAs(ns, "groupExists", [&](const std::string& groupName) {
+        return pm.groupExists(groupName);
+    });
+    RemoteCall::exportAs(ns, "getAllGroups", [&]() {
+        return pm.getAllGroups();
+    });
+    RemoteCall::exportAs(ns, "deleteGroup", [&](const std::string& groupName) {
+        return pm.deleteGroup(groupName);
+    });
+    RemoteCall::exportAs(ns, "addPermissionToGroup", [&](const std::string& groupName, const std::string& permissionName) {
+        return pm.addPermissionToGroup(groupName, permissionName);
+    });
+    RemoteCall::exportAs(ns, "removePermissionFromGroup", [&](const std::string& groupName, const std::string& permissionName) {
+        return pm.removePermissionFromGroup(groupName, permissionName);
+    });
+    RemoteCall::exportAs(ns, "getDirectPermissionsOfGroup", [&](const std::string& groupName) {
+        return pm.getDirectPermissionsOfGroup(groupName);
+    });
+    RemoteCall::exportAs(ns, "getPermissionsOfGroup", [&](const std::string& groupName) {
+        return pm.getPermissionsOfGroup(groupName);
+    });
+    RemoteCall::exportAs(ns, "addGroupInheritance", [&](const std::string& groupName, const std::string& parentGroupName) {
+        return pm.addGroupInheritance(groupName, parentGroupName);
+    });
+    RemoteCall::exportAs(ns, "removeGroupInheritance", [&](const std::string& groupName, const std::string& parentGroupName) {
+        return pm.removeGroupInheritance(groupName, parentGroupName);
+    });
+    RemoteCall::exportAs(ns, "getParentGroups", [&](const std::string& groupName) {
+        return pm.getParentGroups(groupName);
+    });
+    RemoteCall::exportAs(ns, "addPlayerToGroup", [&](const std::string& playerUuid, const std::string& groupName) {
+        return pm.addPlayerToGroup(playerUuid, groupName);
+    });
+    RemoteCall::exportAs(ns, "removePlayerFromGroup", [&](const std::string& playerUuid, const std::string& groupName) {
+        return pm.removePlayerFromGroup(playerUuid, groupName);
+    });
+    RemoteCall::exportAs(ns, "getPlayerGroups", [&](const std::string& playerUuid) {
+        return pm.getPlayerGroups(playerUuid);
+    });
+    RemoteCall::exportAs(ns, "getPlayerGroupIds", [&](const std::string& playerUuid) {
+        return pm.getPlayerGroupIds(playerUuid);
+    });
+    RemoteCall::exportAs(ns, "getPlayersInGroup", [&](const std::string& groupName) {
+        return pm.getPlayersInGroup(groupName);
+    });
+    RemoteCall::exportAs(ns, "getAllPermissionsForPlayer", [&](const std::string& playerUuid) {
+        return pm.getAllPermissionsForPlayer(playerUuid);
+    });
+    RemoteCall::exportAs(ns, "setGroupPriority", [&](const std::string& groupName, int priority) {
+        return pm.setGroupPriority(groupName, priority);
+    });
+    RemoteCall::exportAs(ns, "getGroupPriority", [&](const std::string& groupName) {
+        return pm.getGroupPriority(groupName);
+    });
+    RemoteCall::exportAs(ns, "hasPermission", [&](const std::string& playerUuid, const std::string& permissionNode) {
+        return pm.hasPermission(playerUuid, permissionNode);
+    });
+
+    getSelf().getLogger().info("Exported PermissionManager functions to RemoteCall namespace '{}'", ns);
+
     return true;
 }
 
