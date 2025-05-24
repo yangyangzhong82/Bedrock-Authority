@@ -27,15 +27,21 @@ bool MyMod::load() {
         noRewrite ? "false" : "true");
     // create database
     try {
-        if (config_.db_type == "sqlite") {
-            db_ = db::DatabaseFactory::createSQLite(config_.sqlite_path);
-        } else {
-            db_ = db::DatabaseFactory::createMySQL(config_.mysql_host,
-                                                   config_.mysql_user,
-                                                   config_.mysql_password,
-                                                   config_.mysql_db,
-                                                   config_.mysql_port);
-        }
+if (config_.db_type == "sqlite") {
+    db_ = db::DatabaseFactory::createSQLite(config_.sqlite_path);
+} else if (config_.db_type == "mysql") {
+    db_ = db::DatabaseFactory::createMySQL(config_.mysql_host,
+                                           config_.mysql_user,
+                                           config_.mysql_password,
+                                           config_.mysql_db,
+                                           config_.mysql_port);
+} else if (config_.db_type == "postgresql") {
+    db_ = db::DatabaseFactory::createPostgreSQL(config_.postgresql_host,
+                                                config_.postgresql_user,
+                                                config_.postgresql_password,
+                                                config_.postgresql_db,
+                                                config_.postgresql_port);
+}
         getSelf().getLogger().info("Database '%s' initialized", config_.db_type.c_str());
 
         // 初始化 PermissionManager

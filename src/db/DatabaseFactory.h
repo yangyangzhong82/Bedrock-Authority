@@ -18,7 +18,15 @@ public:
                                                   const std::string& password,
                                                   const std::string& database,
                                                   unsigned int port = 3306);
+    static std::unique_ptr<IDatabase> createPostgreSQL(const std::string& host,
+                                                    const std::string& user,
+                                                    const std::string& password,
+                                                    const std::string& database,
+                                                    unsigned int port = 5432);
+
+
 };
+
 
 } // namespace db
 } // namespace my_mod

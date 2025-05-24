@@ -113,6 +113,10 @@ void MySQLDatabase::close() {
     }
 }
 
+DatabaseType MySQLDatabase::getType() const {
+    return DatabaseType::MySQL;
+}
+
 
 bool MySQLDatabase::executePrepared(const std::string& sql, const std::vector<std::string>& params) {
     auto& logger = ll::mod::NativeMod::current()->getLogger();

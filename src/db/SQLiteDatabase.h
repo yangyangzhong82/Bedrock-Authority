@@ -19,6 +19,8 @@ public:
     std::vector<std::vector<std::string>> queryPrepared(const std::string& sql, const std::vector<std::string>& params) override;
     void close() override;
 
+    virtual DatabaseType getType() const override;
+
 private:
     sqlite3* db_;
 };

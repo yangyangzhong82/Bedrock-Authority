@@ -151,8 +151,12 @@ std::vector<std::vector<std::string>> SQLiteDatabase::queryPrepared(const std::s
     sqlite3_finalize(stmt);
     logger.debug("预处理查询返回 %zu 行", result.size());
     return result;
+    }
+
+
+DatabaseType SQLiteDatabase::getType() const {
+    return DatabaseType::SQLite;
 }
 
-
 } // namespace db
-} // namespace BA // 从 my_mod 更改
+} // namespace BA

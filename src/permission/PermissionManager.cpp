@@ -35,42 +35,63 @@ void PermissionManager::ensureTables() {
         return success;
     };
 
-    // MySQL 兼容语法
-    executeAndLog("CREATE TABLE IF NOT EXISTS permissions (id INT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(255) UNIQUE NOT NULL, description TEXT, default_value INT NOT NULL DEFAULT 0);", "创建 permissions 表");
-    // default_value 列已在上面的 CREATE TABLE 语句中创建。
-    // executeAndLog("ALTER TABLE permissions ADD COLUMN default_value INT NOT NULL DEFAULT 0;", "Add default_value to permissions"); // 移除冗余的 ALTER TABLE
-    executeAndLog("CREATE TABLE IF NOT EXISTS permission_groups (id INT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(255) UNIQUE NOT NULL, description TEXT);", "创建 permission_groups 表");
-    // 修改 group_permissions: 存储规则字符串而不是 permission_id
-    // 移除 is_negated 列，因为它隐含在规则字符串中（以 '-' 开头）
+    db::DatabaseType dbType = db_->getType();
+    std::string createPermissionsTableSql;
+    std::string createPermissionGroupsTableSql;
+
+    if (dbType == db::DatabaseType::SQLite) {
+        logger.info("使用 SQLite 语法创建表...");
+        createPermissionsTableSql = "CREATE TABLE IF NOT EXISTS permissions (id INTEGER PRIMARY KEY, name VARCHAR(255) UNIQUE NOT NULL, description TEXT, default_value INT NOT NULL DEFAULT 0);";
+        createPermissionGroupsTableSql = "CREATE TABLE IF NOT EXISTS permission_groups (id INTEGER PRIMARY KEY, name VARCHAR(255) UNIQUE NOT NULL, description TEXT);";
+    } else if (dbType == db::DatabaseType::MySQL) {
+        logger.info("使用 MySQL 语法创建表...");
+        createPermissionsTableSql = "CREATE TABLE IF NOT EXISTS permissions (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) UNIQUE NOT NULL, description TEXT, default_value INT NOT NULL DEFAULT 0);";
+        createPermissionGroupsTableSql = "CREATE TABLE IF NOT EXISTS permission_groups (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) UNIQUE NOT NULL, description TEXT);";
+    } else if (dbType == db::DatabaseType::PostgreSQL) {
+        logger.info("使用 PostgreSQL 语法创建表...");
+        createPermissionsTableSql = "CREATE TABLE IF NOT EXISTS permissions (id SERIAL PRIMARY KEY, name VARCHAR(255) UNIQUE NOT NULL, description TEXT, default_value INT NOT NULL DEFAULT 0);";
+        createPermissionGroupsTableSql = "CREATE TABLE IF NOT EXISTS permission_groups (id SERIAL PRIMARY KEY, name VARCHAR(255) UNIQUE NOT NULL, description TEXT);";
+    } else {
+        logger.error("未知数据库类型，无法创建表。");
+        return; // Exit if database type is unknown
+    }
+
+    executeAndLog(createPermissionsTableSql, "创建 permissions 表");
+    executeAndLog(createPermissionGroupsTableSql, "创建 permission_groups 表");
+
+    // group_permissions, group_inheritance, player_groups 表的语法是通用的
     executeAndLog("CREATE TABLE IF NOT EXISTS group_permissions (group_id INT NOT NULL, permission_rule VARCHAR(255) NOT NULL, PRIMARY KEY (group_id, permission_rule), FOREIGN KEY (group_id) REFERENCES permission_groups(id) ON DELETE CASCADE);", "创建 group_permissions 表");
-    // --- 迁移逻辑 (示例 - 可能需要根据数据库进行调整) ---
-    // 尝试删除旧版本中可能存在的旧列/约束。如果不存在则忽略错误。
-    db_->execute("ALTER TABLE group_permissions DROP FOREIGN KEY group_permissions_ibfk_2;"); // 示例外键名称，可能不同
-    db_->execute("ALTER TABLE group_permissions DROP COLUMN permission_id;");
-    db_->execute("ALTER TABLE group_permissions DROP COLUMN is_negated;");
-    // 尝试添加新列。如果存在则忽略错误。
-    executeAndLog("ALTER TABLE group_permissions ADD COLUMN permission_rule VARCHAR(255) NOT NULL DEFAULT '';", "向 group_permissions 添加 permission_rule 列");
-    // --- 结束迁移逻辑 ---
     executeAndLog("CREATE TABLE IF NOT EXISTS group_inheritance (group_id INT NOT NULL, parent_group_id INT NOT NULL, PRIMARY KEY (group_id, parent_group_id), FOREIGN KEY (group_id) REFERENCES permission_groups(id) ON DELETE CASCADE, FOREIGN KEY (parent_group_id) REFERENCES permission_groups(id) ON DELETE CASCADE);", "创建 group_inheritance 表");
     executeAndLog("CREATE TABLE IF NOT EXISTS player_groups (player_uuid VARCHAR(36) NOT NULL, group_id INT NOT NULL, PRIMARY KEY (player_uuid, group_id), FOREIGN KEY (group_id) REFERENCES permission_groups(id) ON DELETE CASCADE);", "创建 player_groups 表");
-    // 如果列已存在，ALTER TABLE 可能仍然失败
-    executeAndLog("ALTER TABLE permission_groups ADD COLUMN priority INT NOT NULL DEFAULT 0;", "向 permission_groups 添加 priority 列");
+
+    // ALTER TABLE ADD COLUMN 语法是通用的，但 IF NOT EXISTS 支持不同。
+    // 当前实现是直接执行并依赖 db_->execute 处理错误，这对于 ADD COLUMN 是可接受的。
+    executeAndLog("ALTER TABLE permission_groups ADD COLUMN priority INT NOT NULL DEFAULT 0;", "向 permission_groups 添加 priority 列 (可能已存在)");
 
     // --- 添加索引以优化查询 ---
-    // 检查索引是否存在可能因数据库而异，这里直接尝试创建，忽略错误
-    // 注意：某些数据库（如 MySQL）会自动为主键和外键创建索引
-    // MySQL 不支持 CREATE INDEX IF NOT EXISTS，依赖 execute/executeAndLog 中的错误处理来忽略重复创建
-    logger.info("尝试创建索引 (MySQL 将忽略重复创建错误)...");
-    // 为 permissions.name 创建索引
-    executeAndLog("CREATE INDEX idx_permissions_name ON permissions (name);", "为 permissions.name 创建索引");
-    // 为 permission_groups.name 创建索引
-    executeAndLog("CREATE INDEX idx_permission_groups_name ON permission_groups (name);", "为 permission_groups.name 创建索引");
-    // 为 player_groups.player_uuid 创建索引
-    executeAndLog("CREATE INDEX idx_player_groups_uuid ON player_groups (player_uuid);", "为 player_groups.player_uuid 创建索引");
-    // 为 group_permissions.permission_rule 创建索引 (如果经常按规则查询) - 可选
-    // executeAndLog("CREATE INDEX idx_group_permissions_rule ON group_permissions (permission_rule);", "为 group_permissions.permission_rule 创建索引");
-    // 为 group_inheritance.parent_group_id 创建索引 (外键通常已创建)
-    // executeAndLog("CREATE INDEX IF NOT EXISTS idx_group_inheritance_parent ON group_inheritance (parent_group_id);", "为 group_inheritance.parent_group_id 创建索引");
+    logger.info("尝试创建索引 (如果不存在)...");
+    // db::DatabaseType dbType = db_->getType(); // Already got dbType above
+
+    auto createIndexIfNotExist = [&](const std::string& indexName, const std::string& tableName, const std::string& columnName) {
+        std::string sql;
+        if (dbType == db::DatabaseType::PostgreSQL || dbType == db::DatabaseType::SQLite) {
+            sql = "CREATE INDEX IF NOT EXISTS " + indexName + " ON " + tableName + " (" + columnName + ");";
+        } else if (dbType == db::DatabaseType::MySQL) {
+            // MySQL does not support IF NOT EXISTS for CREATE INDEX directly.
+            // The MySQLDatabase::execute method is expected to handle the duplicate key error (1061) as a warning.
+            // We just attempt to create it.
+            sql = "CREATE INDEX " + indexName + " ON " + tableName + " (" + columnName + ");";
+        } else {
+             logger.error("未知数据库类型，无法创建索引。");
+             return false;
+        }
+        return executeAndLog(sql, "为 " + tableName + "." + columnName + " 创建索引 " + indexName);
+    };
+
+    createIndexIfNotExist("idx_permissions_name", "permissions", "name");
+    createIndexIfNotExist("idx_permission_groups_name", "permission_groups", "name");
+    createIndexIfNotExist("idx_player_groups_uuid", "player_groups", "player_uuid");
+
     logger.info("完成创建索引尝试。");
     // --- 结束添加索引 ---
 
@@ -84,7 +105,7 @@ std::string PermissionManager::getIdByName(const std::string& table, const std::
         ll::mod::NativeMod::current()->getLogger().error("在 getIdByName 中数据库未初始化，表 '%s'，名称 '%s'", table.c_str(), name.c_str());
         return "";
     }
-    std::string sql = "SELECT id FROM " + table + " WHERE name = ? LIMIT 1;";
+std::string sql = "SELECT id FROM " + table + " WHERE name = ? LIMIT 1;";
     auto rows = db_->queryPrepared(sql, {name});
     if (rows.empty() || rows[0].empty()) {
         return "";
@@ -168,11 +189,11 @@ bool PermissionManager::registerPermission(const std::string& name, const std::s
     std::string defaultValueStr = defaultValue ? "1" : "0";
 
     // 先尝试插入
-    std::string insertSql = "INSERT IGNORE INTO permissions (name, description, default_value) VALUES (?, ?, ?);";
+std::string insertSql = "INSERT INTO permissions (name, description, default_value) VALUES (?, ?, ?) ON CONFLICT (name) DO NOTHING;";
     bool insertOk = db_->executePrepared(insertSql, {name, description, defaultValueStr});
 
     // 然后更新 (以防它已经存在)
-    std::string updateSql = "UPDATE permissions SET description = ?, default_value = ? WHERE name = ?;";
+std::string updateSql = "UPDATE permissions SET description = ?, default_value = ? WHERE name = ?;";
     bool updateOk = db_->executePrepared(updateSql, {description, defaultValueStr, name});
 
     // 如果任一操作逻辑上成功（插入新的或更新现有的），则认为成功
@@ -182,7 +203,7 @@ bool PermissionManager::registerPermission(const std::string& name, const std::s
 }
 
 bool PermissionManager::permissionExists(const std::string& name) {
-    std::string sql = "SELECT 1 FROM permissions WHERE name = ? LIMIT 1;";
+std::string sql = "SELECT 1 FROM permissions WHERE name = ? LIMIT 1;";
     auto rows = db_->queryPrepared(sql, {name});
     return !rows.empty();
 }
@@ -202,26 +223,43 @@ bool PermissionManager::createGroup(const std::string& groupName, const std::str
         return false;
     }
     logger.info("尝试创建组 '%s'...", groupName.c_str());
-    // 使用标准 INSERT，依赖 UNIQUE 约束和 executePrepared 中的错误处理
-    std::string sql = "INSERT INTO permission_groups (name, description) VALUES (?, ?);";
-    bool success = db_->executePrepared(sql, {groupName, description});
 
-    if (success) {
-        // 如果插入成功（或因重复键而被忽略），尝试获取 ID 并更新缓存
-        // 注意：如果 executePrepared 返回 true 但实际上是重复键，我们需要查询 ID
-        std::string gid = getIdByName("permission_groups", groupName); // 仍然需要查询一次以获取 ID
-        if (!gid.empty()) {
-            updateGroupCache(groupName, gid); // 更新缓存
-            logger.info("组 '%s' (ID: %s) 已创建或已存在，缓存已更新。", groupName.c_str(), gid.c_str());
-        } else {
-             // 这种情况理论上不应该发生，如果插入/忽略成功，应该能查到 ID
-             logger.error("创建组 '%s' 后未能查询到其 ID！缓存可能未更新。", groupName.c_str());
-        }
+    db::DatabaseType dbType = db_->getType();
+    std::string insertSql;
+
+    if (dbType == db::DatabaseType::SQLite || dbType == db::DatabaseType::PostgreSQL) {
+        // SQLite and PostgreSQL support ON CONFLICT DO NOTHING
+        insertSql = "INSERT INTO permission_groups (name, description) VALUES (?, ?) ON CONFLICT (name) DO NOTHING;";
+    } else if (dbType == db::DatabaseType::MySQL) {
+        // MySQL uses INSERT IGNORE
+        insertSql = "INSERT IGNORE INTO permission_groups (name, description) VALUES (?, ?);";
     } else {
-        logger.info("创建组 '%s' 失败。", groupName.c_str());
-        // logger.error("数据库错误详情: %s", db_->getLastError().c_str());
+        logger.error("未知数据库类型，无法创建组。");
+        return false;
     }
-    return success;
+
+    // Execute the insert statement. We don't need the returned ID here,
+    // we will query for it by name afterwards.
+    bool insertAttemptSuccess = db_->executePrepared(insertSql, {groupName, description});
+
+    // Even if insertAttemptSuccess is false (e.g., a real DB error, not just conflict/ignore),
+    // or if it was ignored, we now query by name to get the ID.
+    // This handles both cases: group was newly created, or group already existed.
+    std::string gid = getIdByName("permission_groups", groupName);
+
+    if (!gid.empty()) {
+        // Successfully got the ID, either from a new insert or an existing group
+        logger.info("组 '%s' 已存在或已创建 (ID: %s)。", groupName.c_str(), gid.c_str());
+        updateGroupCache(groupName, gid); // Update cache
+        logger.info("组 '%s' (ID: %s) 缓存已更新。", groupName.c_str(), gid.c_str());
+        return true; // Indicate success
+    } else {
+        // If we still can't get the ID by name, something went wrong during insert
+        // or the group simply doesn't exist after the operation.
+        logger.error("创建组 '%s' 或获取其 ID 失败。", groupName.c_str());
+        // logger.error("数据库错误详情: %s", db_->getLastError().c_str()); // If available
+        return false; // Indicate failure
+    }
 }
 
 bool PermissionManager::groupExists(const std::string& groupName) {
@@ -255,7 +293,7 @@ bool PermissionManager::deleteGroup(const std::string& groupName) {
 
     // group_permissions, group_inheritance, player_groups 中的外键上的 ON DELETE CASCADE
     // 应该在删除组时自动处理相关删除。
-    std::string sql = "DELETE FROM permission_groups WHERE id = ?;";
+std::string sql = "DELETE FROM permission_groups WHERE id = ?;";
     bool success = db_->executePrepared(sql, {gid});
 
     if (success) {
@@ -287,9 +325,9 @@ bool PermissionManager::addPermissionToGroup(const std::string& groupName, const
     logger.info("向组 '%s' (GID: %s) 添加权限规则 '%s'",
                 permissionRule.c_str(), groupName.c_str(), gid.c_str());
 
-    // MySQL 使用 INSERT IGNORE, SQLite 使用 INSERT OR IGNORE
+    // MySQL 使用 INSERT IGNORE, SQLite 使用 INSERT OR IGNORE, PostgreSQL 使用 ON CONFLICT
     // 直接插入组 ID 和权限规则字符串。
-    std::string sql = "INSERT IGNORE INTO group_permissions (group_id, permission_rule) VALUES (?, ?);";
+std::string sql = "INSERT INTO group_permissions (group_id, permission_rule) VALUES (?, ?) ON CONFLICT (group_id, permission_rule) DO NOTHING;";
     return db_->executePrepared(sql, {gid, permissionRule});
 }
 
@@ -311,7 +349,7 @@ bool PermissionManager::removePermissionFromGroup(const std::string& groupName, 
     logger.info("从组 '%s' (GID: %s) 移除权限规则 '%s'",
                 permissionRule.c_str(), groupName.c_str(), gid.c_str());
 
-    std::string sql = "DELETE FROM group_permissions WHERE group_id = ? AND permission_rule = ?;";
+std::string sql = "DELETE FROM group_permissions WHERE group_id = ? AND permission_rule = ?;";
     return db_->executePrepared(sql, {gid, permissionRule});
 }
 
@@ -362,8 +400,8 @@ bool PermissionManager::addGroupInheritance(const std::string& groupName, const 
         return false;
     }
     // TODO: 添加循环检测？
-    // MySQL 使用 INSERT IGNORE
-    std::string sql = "INSERT IGNORE INTO group_inheritance (group_id, parent_group_id) VALUES (?, ?);";
+    // MySQL 使用 INSERT IGNORE, PostgreSQL 使用 ON CONFLICT
+    std::string sql = "INSERT INTO group_inheritance (group_id, parent_group_id) VALUES (?, ?) ON CONFLICT (group_id, parent_group_id) DO NOTHING;";
     return db_->executePrepared(sql, {gid, pgid});
 }
 
@@ -463,8 +501,8 @@ bool PermissionManager::addPlayerToGroup(const std::string& playerUuid, const st
         logger.warn("AddPlayerToGroup: 组 '%s' 未找到 (来自缓存或数据库)。", groupName.c_str());
         return false;
     }
-    // MySQL 使用 INSERT IGNORE, SQLite 使用 INSERT OR IGNORE
-    std::string sql = "INSERT IGNORE INTO player_groups (player_uuid, group_id) VALUES (?, ?);";
+    // MySQL 使用 INSERT IGNORE, SQLite 使用 INSERT OR IGNORE, PostgreSQL 使用 ON CONFLICT
+    std::string sql = "INSERT INTO player_groups (player_uuid, group_id) VALUES (?, ?) ON CONFLICT (player_uuid, group_id) DO NOTHING;";
     return db_->executePrepared(sql, {playerUuid, gid});
 }
 

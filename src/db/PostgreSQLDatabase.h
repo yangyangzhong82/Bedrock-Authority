@@ -1,21 +1,21 @@
 #pragma once
 
 #include "db/IDatabase.h"
-#include <mysql.h>
+#include <libpq-fe.h>  // Include PostgreSQL C API
 #include <string>
 #include <vector>
 
 namespace BA {
 namespace db {
 
-class MySQLDatabase : public IDatabase {
+class PostgreSQLDatabase : public IDatabase {
 public:
-    MySQLDatabase(const std::string& host,
-                  const std::string& user,
-                  const std::string& password,
-                  const std::string& database,
-                  unsigned int port = 3306);
-    ~MySQLDatabase() override;
+    PostgreSQLDatabase(const std::string& host,
+                       const std::string& user,
+                       const std::string& password,
+                       const std::string& database,
+                       unsigned int port = 5432);
+    ~PostgreSQLDatabase() override;
 
     bool execute(const std::string& sql) override;
     std::vector<std::vector<std::string>> query(const std::string& sql) override;
@@ -26,7 +26,7 @@ public:
     virtual DatabaseType getType() const override;
 
 private:
-    MYSQL* conn_;
+    PGconn* conn_;
 };
 
 } // namespace db

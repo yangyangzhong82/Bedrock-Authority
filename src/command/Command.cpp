@@ -14,7 +14,7 @@
 #include "permission/PermissionManager.h"
 #include "command/Command.h"
 #include <string>
-#include <vector> // 确保包含 vector
+#include <vector> 
 namespace BA::Command {
     using ll::service::PlayerInfo;
     void RegisterCommands() {
@@ -170,27 +170,27 @@ namespace BA::Command {
             }
         });
 
-        // 新增：添加权限组节点命令
+        // 添加权限组节点命令
         cmd.overload<添加权限组节点>()
         .text("添加权限组节点")
         .required("权限组id")
         .required("权限节点id")
         .execute([&](CommandOrigin const& origin, CommandOutput& output, 添加权限组节点 const& param, ::Command const&) {
             auto& pm = BA::permission::PermissionManager::getInstance();
-            if (!pm.groupExists(param.权限组id)) {
-                output.error("权限组 '" + param.权限组id + "' 不存在。");
-                return;
-            }
-            // 注意：这里假设权限节点不需要预先注册，如果需要，则要添加检查 pm.permissionExists(param.权限节点id)
+            // 直接尝试添加权限节点，依赖 addPermissionToGroup 内部的组存在性检查和缓存逻辑
             bool ok = pm.addPermissionToGroup(param.权限组id, param.权限节点id);
             if (ok) {
                 output.success("已将权限节点 '" + param.权限节点id + "' 添加到权限组 '" + param.权限组id + "'。");
             } else {
-                output.error("添加失败，权限组或权限节点可能不存在，或权限已分配。");
+                if (!pm.groupExists(param.权限组id)) {
+                     output.error("添加失败：权限组 '" + param.权限组id + "' 不存在。");
+                } else {
+                     output.error("添加失败：权限节点 '" + param.权限节点id + "' 可能已分配给权限组 '" + param.权限组id + "'。");
+                }
             }
         });
 
-        // 新增：删除权限组节点命令
+        // 删除权限组节点命令
         cmd.overload<删除权限组节点>()
         .text("删除权限组节点")
         .required("权限组id")
@@ -211,7 +211,7 @@ namespace BA::Command {
         });
 
 
-        // 新增：列出玩家生效的权限节点命令
+        // 列出玩家生效的权限节点命令
         cmd.overload<列出玩家权限节点>()
         .text("列出玩家权限节点")
         .required("playerName")
@@ -301,7 +301,7 @@ namespace BA::Command {
             }
         });
 
-        // 新增：移除玩家权限组命令
+        // 移除玩家权限组命令
         cmd.overload<移除玩家权限组>()
         .text("移除权限组") // 命令的子字符串，例如 /ba 移除权限组
         .required("playerName") // 第一个必需参数：玩家选择器
@@ -347,7 +347,7 @@ namespace BA::Command {
                 }
             }
         });
-        // 新增：移除玩家权限组命令
+        // 移除玩家权限组命令
         cmd.overload<离线移除玩家权限组>()
         .text("移除权限组") // 命令的子字符串，例如 /ba 移除权限组
         .required("playerName") // 第一个必需参数：玩家选择器
@@ -392,7 +392,7 @@ namespace BA::Command {
             }
         });
 
-        // 新增：设置权限组继承命令
+        // 设置权限组继承命令
         cmd.overload<设置权限组继承>()
         .text("设置权限组继承") // 命令的子字符串，例如 /ba 设置权限组继承
         .required("子权限组id") // 第一个必需参数：子权限组ID
@@ -419,7 +419,7 @@ namespace BA::Command {
             }
         });
 
-        // 新增：移除权限组继承命令
+        // 移除权限组继承命令
         cmd.overload<移除权限组继承>()
         .text("移除权限组继承") // 命令的子字符串
         .required("子权限组id") // 子权限组ID

@@ -6,9 +6,17 @@
 namespace BA {
 namespace db {
 
+enum class DatabaseType {
+    Unknown,
+    SQLite,
+    MySQL,
+    PostgreSQL
+};
+
 class IDatabase {
 public:
     virtual ~IDatabase() = default;
+    virtual DatabaseType getType() const = 0;
     /// @brief Execute a SQL statement without expecting a result set (Use executePrepared for security)
     virtual bool execute(const std::string& sql) = 0;
     /// @brief Execute a SQL query and return rows of columns (Use queryPrepared for security)

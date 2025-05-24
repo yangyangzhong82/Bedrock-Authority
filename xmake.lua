@@ -14,6 +14,7 @@ add_requires("levibuildscript")
 add_requires("sqlite3")
 add_requires("mysql")
 add_requires("legacyremotecall")
+add_requires("postgresql")
 
 if not has_config("vs_runtime") then
     set_runtimes("MD")
@@ -31,7 +32,7 @@ target("Bedrock-Authority") -- Change this to your mod name.
     add_cxflags( "/EHa", "/utf-8", "/W4", "/w44265", "/w44289", "/w44296", "/w45263", "/w44738", "/w45204")
     -- Add BA_EXPORTS to enable dllexport/dllimport macros
     add_defines("NOMINMAX", "UNICODE", "BA_EXPORTS")
-    add_packages("levilamina","sqlite3","mysql" ,"legacyremotecall")
+    add_packages("levilamina","sqlite3","mysql" ,"legacyremotecall","postgresql")
     set_exceptions("none") -- To avoid conflicts with /EHa.
     set_kind("shared")
     set_languages("c++20")
