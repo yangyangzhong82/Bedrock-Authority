@@ -19,7 +19,8 @@
 #include <vector>
 #include <unordered_map> // For cache
 #include <shared_mutex>  // For thread-safe cache access
-#include "db/IDatabase.h"
+
+namespace BA { namespace db { class IDatabase; } } // 前向声明 IDatabase
 
 namespace BA {
 namespace permission {

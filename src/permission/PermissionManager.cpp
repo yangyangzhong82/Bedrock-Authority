@@ -1,3 +1,4 @@
+#include "db/IDatabase.h" 
 #include "permission/PermissionManager.h"
 #include <set>
 #include <shared_mutex> // Include for locks
