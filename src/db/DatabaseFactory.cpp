@@ -16,6 +16,7 @@ std::unique_ptr<IDatabase> DatabaseFactory::createMySQL(const std::string& host,
                                                          unsigned int port) {
     return std::make_unique<MySQLDatabase>(host, user, password, database, port);
 }
+/*
 std::unique_ptr<IDatabase> DatabaseFactory::createPostgreSQL(const std::string& host,
                                                               const std::string& user,
                                                               const std::string& password,
@@ -23,6 +24,6 @@ std::unique_ptr<IDatabase> DatabaseFactory::createPostgreSQL(const std::string& 
                                                               unsigned int port) {
     return std::make_unique<PostgreSQLDatabase>(host, user, password, database, port);
 }
-
+*/
 } // namespace db
 } // namespace my_mod

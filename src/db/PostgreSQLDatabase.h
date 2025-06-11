@@ -1,3 +1,4 @@
+/*
 #pragma once
 
 #include "db/IDatabase.h"
@@ -31,3 +32,4 @@ private:
 
 } // namespace db
 } // namespace my_mod
+*/

@@ -25,6 +25,23 @@ namespace BA { namespace db { class IDatabase; } } // 前向声明 IDatabase
 namespace BA {
 namespace permission {
 
+// 新增结构体用于返回组的详细信息
+struct BA_API GroupDetails {
+    std::string id;
+    std::string name;
+    std::string description;
+    int priority;
+    bool isValid = false; // 指示此结构体是否包含有效数据
+
+    // 默认构造函数
+    GroupDetails() : id(""), name(""), description(""), priority(0), isValid(false) {}
+
+    // 带参数的构造函数
+    GroupDetails(std::string id, std::string name, std::string description, int priority)
+        : id(std::move(id)), name(std::move(name)), description(std::move(description)), priority(priority), isValid(true) {}
+};
+
+
 class BA_API PermissionManager { // Export the class itself if needed, or just members
 public:
     static PermissionManager& getInstance(); // Static instance getter might not need export depending on usage
@@ -83,6 +100,15 @@ public:
     int getGroupPriority(const std::string& groupName);
     /// 检查玩家是否拥有特定权限（支持通配符和否定）
     bool hasPermission(const std::string& playerUuid, const std::string& permissionNode);
+
+    /// 获取组的详细信息（名称、描述、优先级）。如果组不存在，返回 isValid 为 false 的 GroupDetails。
+    GroupDetails getGroupDetails(const std::string& groupName);
+
+    /// 更新组的描述。
+    bool updateGroupDescription(const std::string& groupName, const std::string& newDescription);
+
+    /// 获取组的描述。如果组不存在，返回空字符串。
+    std::string getGroupDescription(const std::string& groupName);
 
 private:
     PermissionManager() = default;

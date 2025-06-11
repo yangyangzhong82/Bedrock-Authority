@@ -824,5 +824,65 @@ bool PermissionManager::hasPermission(const std::string& playerUuid, const std::
     return false;
 }
 
+GroupDetails PermissionManager::getGroupDetails(const std::string& groupName) {
+    auto& logger = ll::mod::NativeMod::current()->getLogger();
+    std::string gid = getCachedGroupId(groupName);
+    if (gid.empty()) {
+        logger.warn("getGroupDetails: 组 '%s' 未找到 (来自缓存或数据库)。", groupName.c_str());
+        return GroupDetails(); // 返回无效的 GroupDetails
+    }
+
+    std::string sql = "SELECT id, name, description, priority FROM permission_groups WHERE id = ? LIMIT 1;";
+    auto rows = db_->queryPrepared(sql, {gid});
+
+    if (!rows.empty() && rows[0].size() >= 4) {
+        try {
+            int priority = std::stoi(rows[0][3]);
+            return GroupDetails(rows[0][0], rows[0][1], rows[0][2], priority);
+        } catch (const std::invalid_argument& ia) {
+            logger.error("getGroupDetails: 组 '%s' 的优先级值无效: %s", groupName.c_str(), rows[0][3].c_str());
+        } catch (const std::out_of_range& oor) {
+            logger.error("getGroupDetails: 组 '%s' 的优先级值超出范围: %s", groupName.c_str(), rows[0][3].c_str());
+        }
+    }
+    logger.warn("getGroupDetails: 无法获取组 '%s' 的详细信息。", groupName.c_str());
+    return GroupDetails(); // 返回无效的 GroupDetails
+}
+
+bool PermissionManager::updateGroupDescription(const std::string& groupName, const std::string& newDescription) {
+    auto& logger = ll::mod::NativeMod::current()->getLogger();
+    std::string gid = getCachedGroupId(groupName);
+    if (gid.empty()) {
+        logger.warn("updateGroupDescription: 组 '%s' 未找到 (来自缓存或数据库)。", groupName.c_str());
+        return false;
+    }
+
+    std::string sql = "UPDATE permission_groups SET description = ? WHERE id = ?;";
+    bool success = db_->executePrepared(sql, {newDescription, gid});
+    if (success) {
+        logger.info("成功更新组 '%s' (ID: %s) 的描述。", groupName.c_str(), gid.c_str());
+    } else {
+        logger.error("更新组 '%s' (ID: %s) 的描述失败。", groupName.c_str(), gid.c_str());
+    }
+    return success;
+}
+
+std::string PermissionManager::getGroupDescription(const std::string& groupName) {
+    auto& logger = ll::mod::NativeMod::current()->getLogger();
+    std::string gid = getCachedGroupId(groupName);
+    if (gid.empty()) {
+        logger.warn("getGroupDescription: 组 '%s' 未找到 (来自缓存或数据库)。", groupName.c_str());
+        return "";
+    }
+
+    std::string sql = "SELECT description FROM permission_groups WHERE id = ? LIMIT 1;";
+    auto rows = db_->queryPrepared(sql, {gid});
+
+    if (!rows.empty() && !rows[0].empty()) {
+        return rows[0][0];
+    }
+    return "";
+}
+
 } // namespace permission
 } // namespace BA

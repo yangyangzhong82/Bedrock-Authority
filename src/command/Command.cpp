@@ -23,7 +23,7 @@ namespace BA::Command {
         auto& cmd = Registrar.getOrCreateCommand(
             "bedrockauthority",                         // 命令名
             "权限",                // 命令描述
-            CommandPermissionLevel::Any,      // 权限
+            CommandPermissionLevel::GameDirectors,      // 权限
             CommandFlagValue::NotCheat //无需作弊
         );
         cmd.alias("权限组"); // 增加别名

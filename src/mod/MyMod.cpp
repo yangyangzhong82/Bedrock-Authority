@@ -36,18 +36,22 @@ if (config_.db_type == "sqlite") {
                                            config_.mysql_db,
                                            config_.mysql_port);
 } else if (config_.db_type == "postgresql") {
-    db_ = db::DatabaseFactory::createPostgreSQL(config_.postgresql_host,
+   /* db_ = db::DatabaseFactory::createPostgreSQL(config_.postgresql_host,
                                                 config_.postgresql_user,
                                                 config_.postgresql_password,
                                                 config_.postgresql_db,
                                                 config_.postgresql_port);
+                                                */
 }
+
         getSelf().getLogger().info("Database '%s' initialized", config_.db_type.c_str());
 
         // 初始化 PermissionManager
         if (db_) {
             permission::PermissionManager::getInstance().init(db_.get()); // 使用 get() 获取原始指针
             getSelf().getLogger().info("PermissionManager initialized with the database connection.");
+
+      
          } else {
               // 这个分支理论上不应该执行，因为如果 db_ 为空，上面的 catch 会捕获异常
               getSelf().getLogger().error("Database pointer is null after creation attempt, cannot initialize PermissionManager."); // 使用 error 级别
@@ -70,10 +74,12 @@ bool MyMod::enable() {
     getSelf().getLogger().info("Mod enabled");
     BA::Command::RegisterCommands();
 
+
+
     // Export PermissionManager functions using RemoteCall
     auto& pm = permission::PermissionManager::getInstance();
     const std::string ns = "BA"; // Namespace for exported functions
-
+/*
     RemoteCall::exportAs(ns, "registerPermission", [&](const std::string& name, const std::string& description, bool defaultValue) {
         return pm.registerPermission(name, description, defaultValue);
     });
@@ -143,7 +149,16 @@ bool MyMod::enable() {
     RemoteCall::exportAs(ns, "hasPermission", [&](const std::string& playerUuid, const std::string& permissionNode) {
         return pm.hasPermission(playerUuid, permissionNode);
     });
-
+    RemoteCall::exportAs(ns, "getGroupDetails", [&](const std::string& groupName) {
+        return pm.getGroupDetails(groupName);
+    });
+    RemoteCall::exportAs(ns, "updateGroupDescription", [&](const std::string& groupName, const std::string& newDescription) {
+        return pm.updateGroupDescription(groupName, newDescription);
+    });
+    RemoteCall::exportAs(ns, "getGroupDescription", [&](const std::string& groupName) {
+        return pm.getGroupDescription(groupName);
+    });
+*/
     getSelf().getLogger().info("Exported PermissionManager functions to RemoteCall namespace '{}'", ns);
 
     return true;
@@ -151,7 +166,6 @@ bool MyMod::enable() {
 
 bool MyMod::disable() {
     getSelf().getLogger().info("Disabling mod...");
-    // Code for disabling the mod goes here.
     getSelf().getLogger().info("Mod disabled");
     return true;
 }
