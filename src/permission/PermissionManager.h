@@ -115,6 +115,17 @@ private:
     PermissionManager() = default;
     void ensureTables(); // 确保表存在
 
+    // 辅助函数：根据名称从权限表或组表中获取 ID
+    std::string getIdByName(const std::string& table, const std::string& name);
+
+    // 辅助函数：将通配符模式转换为正则表达式字符串
+    std::string wildcardToRegex(const std::string& pattern);
+
+    // 新增辅助函数：递归获取所有子组
+    std::set<std::string> getChildGroupsRecursive(const std::string& groupName);
+    // 新增辅助函数：获取受特定组修改影响的所有玩家 UUID
+    std::vector<std::string> getAffectedPlayersByGroup(const std::string& groupName);
+
     // --- 缓存相关 ---
     // 从缓存或数据库获取组 ID
     std::string getCachedGroupId(const std::string& groupName);
@@ -128,26 +139,30 @@ private:
     void invalidatePlayerPermissionsCache(const std::string& playerUuid);
     // 使所有玩家的权限缓存失效
     void invalidateAllPlayerPermissionsCache();
+    // 使特定组的权限缓存失效
+    void invalidateGroupPermissionsCache(const std::string& groupName);
+    // 使所有组的权限缓存失效
+    void invalidateAllGroupPermissionsCache();
+    // 从数据库加载所有组的权限到缓存
+    void populateGroupPermissionsCache();
     // --- 结束缓存相关 ---
-
-
-    // 辅助函数：根据名称从权限表或组表中获取 ID (现在主要用于 permissions 表)
-    std::string getIdByName(const std::string& table, const std::string& name);
-
-    // 辅助函数：将通配符模式转换为正则表达式字符串
-    std::string wildcardToRegex(const std::string& pattern);
 
 
     db::IDatabase* db_ = nullptr;
     // 组名到组 ID 的缓存
     std::unordered_map<std::string, std::string> groupNameCache_;
-    // 用于保护缓存访问的读写锁
+    // 用于保护组名缓存访问的读写锁
     mutable std::shared_mutex cacheMutex_; // mutable 允许在 const 方法中锁定
 
     // 玩家权限缓存
     std::unordered_map<std::string, std::vector<std::string>> playerPermissionsCache_;
     // 用于保护玩家权限缓存的读写锁
     mutable std::shared_mutex playerPermissionsCacheMutex_;
+
+    // 组权限缓存 (新添加)
+    std::unordered_map<std::string, std::vector<std::string>> groupPermissionsCache_;
+    // 用于保护组权限缓存的读写锁 (新添加)
+    mutable std::shared_mutex groupPermissionsCacheMutex_;
 }; 
 
 } // namespace permission
