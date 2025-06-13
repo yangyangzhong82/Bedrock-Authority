@@ -197,17 +197,21 @@ bool PermissionManager::registerPermission(const std::string& name, const std::s
     std::string defaultValueStr = defaultValue ? "1" : "0";
 
     // 先尝试插入
-std::string insertSql = "INSERT INTO permissions (name, description, default_value) VALUES (?, ?, ?) ON CONFLICT (name) DO NOTHING;";
+    std::string insertSql = "INSERT INTO permissions (name, description, default_value) VALUES (?, ?, ?) ON CONFLICT (name) DO NOTHING;";
     bool insertOk = db_->executePrepared(insertSql, {name, description, defaultValueStr});
 
     // 然后更新 (以防它已经存在)
-std::string updateSql = "UPDATE permissions SET description = ?, default_value = ? WHERE name = ?;";
+    std::string updateSql = "UPDATE permissions SET description = ?, default_value = ? WHERE name = ?;";
     bool updateOk = db_->executePrepared(updateSql, {description, defaultValueStr, name});
 
     // 如果任一操作逻辑上成功（插入新的或更新现有的），则认为成功
     // 更健壮的检查可能涉及检查受影响的行数（如果数据库 API 支持）。
     // 目前，如果 execute 调用没有返回 false（表示数据库错误），我们假设成功。
-    return insertOk && updateOk; // 或者如果 insert 是 IGNORE，则可能仅 updateOk
+    if (insertOk && updateOk) {
+        invalidateAllPlayerPermissionsCache(); // 权限注册/更新可能影响所有玩家的默认权限
+        return true;
+    }
+    return false; // 或者如果 insert 是 IGNORE，则可能仅 updateOk
 }
 
 bool PermissionManager::permissionExists(const std::string& name) {
@@ -310,11 +314,12 @@ bool PermissionManager::deleteGroup(const std::string& groupName) {
 
     // group_permissions, group_inheritance, player_groups 中的外键上的 ON DELETE CASCADE
     // 应该在删除组时自动处理相关删除。
-std::string sql = "DELETE FROM permission_groups WHERE id = ?;";
+    std::string sql = "DELETE FROM permission_groups WHERE id = ?;";
     bool success = db_->executePrepared(sql, {gid});
 
     if (success) {
         invalidateGroupCache(groupName); // 如果删除成功，则使缓存失效
+        invalidateAllPlayerPermissionsCache(); // 组的删除会影响所有玩家的权限
         logger.info("删除组 '%s' (ID: %s) 成功，缓存已失效。", groupName.c_str(), gid.c_str());
     } else {
          logger.info("删除组 '%s' (ID: %s) 失败。", groupName.c_str(), gid.c_str());
@@ -345,7 +350,11 @@ bool PermissionManager::addPermissionToGroup(const std::string& groupName, const
     // MySQL 使用 INSERT IGNORE, SQLite 使用 INSERT OR IGNORE, PostgreSQL 使用 ON CONFLICT
     // 直接插入组 ID 和权限规则字符串。
 std::string sql = "INSERT INTO group_permissions (group_id, permission_rule) VALUES (?, ?) ON CONFLICT (group_id, permission_rule) DO NOTHING;";
-    return db_->executePrepared(sql, {gid, permissionRule});
+    bool success = db_->executePrepared(sql, {gid, permissionRule});
+    if (success) {
+        invalidateAllPlayerPermissionsCache(); // 组权限变化会影响所有玩家
+    }
+    return success;
 }
 
 bool PermissionManager::removePermissionFromGroup(const std::string& groupName, const std::string& permissionRule) {
@@ -367,7 +376,11 @@ bool PermissionManager::removePermissionFromGroup(const std::string& groupName, 
                 permissionRule.c_str(), groupName.c_str(), gid.c_str());
 
 std::string sql = "DELETE FROM group_permissions WHERE group_id = ? AND permission_rule = ?;";
-    return db_->executePrepared(sql, {gid, permissionRule});
+    bool success = db_->executePrepared(sql, {gid, permissionRule});
+    if (success) {
+        invalidateAllPlayerPermissionsCache(); // 组权限变化会影响所有玩家
+    }
+    return success;
 }
 
 std::vector<std::string> PermissionManager::getDirectPermissionsOfGroup(const std::string& groupName) {
@@ -419,7 +432,11 @@ bool PermissionManager::addGroupInheritance(const std::string& groupName, const 
     // TODO: 添加循环检测？
     // MySQL 使用 INSERT IGNORE, PostgreSQL 使用 ON CONFLICT
     std::string sql = "INSERT INTO group_inheritance (group_id, parent_group_id) VALUES (?, ?) ON CONFLICT (group_id, parent_group_id) DO NOTHING;";
-    return db_->executePrepared(sql, {gid, pgid});
+    bool success = db_->executePrepared(sql, {gid, pgid});
+    if (success) {
+        invalidateAllPlayerPermissionsCache(); // 继承关系变化会影响所有玩家
+    }
+    return success;
 }
 
 bool PermissionManager::removeGroupInheritance(const std::string& groupName, const std::string& parentGroupName) {
@@ -429,7 +446,11 @@ bool PermissionManager::removeGroupInheritance(const std::string& groupName, con
         return false; // 尝试移除不存在的映射 (来自缓存或数据库) 时不发出警告
     }
     std::string sql = "DELETE FROM group_inheritance WHERE group_id = ? AND parent_group_id = ?;";
-    return db_->executePrepared(sql, {gid, pgid});
+    bool success = db_->executePrepared(sql, {gid, pgid});
+    if (success) {
+        invalidateAllPlayerPermissionsCache(); // 继承关系变化会影响所有玩家
+    }
+    return success;
 }
 
 #include <map> // 为解析步骤包含 map
@@ -520,7 +541,11 @@ bool PermissionManager::addPlayerToGroup(const std::string& playerUuid, const st
     }
     // MySQL 使用 INSERT IGNORE, SQLite 使用 INSERT OR IGNORE, PostgreSQL 使用 ON CONFLICT
     std::string sql = "INSERT INTO player_groups (player_uuid, group_id) VALUES (?, ?) ON CONFLICT (player_uuid, group_id) DO NOTHING;";
-    return db_->executePrepared(sql, {playerUuid, gid});
+    bool success = db_->executePrepared(sql, {playerUuid, gid});
+    if (success) {
+        invalidatePlayerPermissionsCache(playerUuid); // 玩家组变化，使该玩家缓存失效
+    }
+    return success;
 }
 
 bool PermissionManager::removePlayerFromGroup(const std::string& playerUuid, const std::string& groupName) {
@@ -532,7 +557,11 @@ bool PermissionManager::removePlayerFromGroup(const std::string& playerUuid, con
         return false;
     }
     std::string sql = "DELETE FROM player_groups WHERE player_uuid = ? AND group_id = ?;";
-    return db_->executePrepared(sql, {playerUuid, gid});
+    bool success = db_->executePrepared(sql, {playerUuid, gid});
+    if (success) {
+        invalidatePlayerPermissionsCache(playerUuid); // 玩家组变化，使该玩家缓存失效
+    }
+    return success;
 }
 
 std::vector<std::string> PermissionManager::getPlayerGroups(const std::string& playerUuid) {
@@ -575,7 +604,7 @@ std::vector<std::string> PermissionManager::getPlayersInGroup(const std::string&
 
 
 // 辅助函数：将通配符模式转换为正则表达式字符串
-std::string wildcardToRegex(const std::string& pattern) {
+std::string PermissionManager::wildcardToRegex(const std::string& pattern) {
     std::string regexPatternStr = "^";
     for (char c : pattern) {
         if (c == '*') {
@@ -591,11 +620,35 @@ std::string wildcardToRegex(const std::string& pattern) {
     return regexPatternStr;
 }
 
+// 使特定玩家的权限缓存失效
+void PermissionManager::invalidatePlayerPermissionsCache(const std::string& playerUuid) {
+    std::unique_lock lock(playerPermissionsCacheMutex_);
+    playerPermissionsCache_.erase(playerUuid);
+    ll::mod::NativeMod::current()->getLogger().debug("玩家 '%s' 的权限缓存已失效。", playerUuid.c_str());
+}
+
+// 使所有玩家的权限缓存失效
+void PermissionManager::invalidateAllPlayerPermissionsCache() {
+    std::unique_lock lock(playerPermissionsCacheMutex_);
+    playerPermissionsCache_.clear();
+    ll::mod::NativeMod::current()->getLogger().debug("所有玩家的权限缓存已失效。");
+}
 
 std::vector<std::string> PermissionManager::getAllPermissionsForPlayer(const std::string& playerUuid) {
     auto& logger = ll::mod::NativeMod::current()->getLogger();
     logger.debug("为玩家 '%s' 计算所有有效权限节点", playerUuid.c_str());
 
+    // 1. 尝试从缓存读取
+    {
+        std::shared_lock lock(playerPermissionsCacheMutex_);
+        auto it = playerPermissionsCache_.find(playerUuid);
+        if (it != playerPermissionsCache_.end()) {
+            logger.debug("玩家 '%s' 的权限从缓存中获取。", playerUuid.c_str());
+            return it->second; // 缓存命中
+        }
+    } // 共享锁在此处释放
+
+    // 2. 缓存未命中，需要计算并写入缓存
     std::set<std::string> effectiveNodes; // 存储最终授予的节点
     std::vector<std::string> positiveRules;
     std::vector<std::string> negativeRules;
@@ -718,6 +771,13 @@ std::vector<std::string> PermissionManager::getAllPermissionsForPlayer(const std
     std::vector<std::string> finalNodes(effectiveNodes.begin(), effectiveNodes.end());
     std::sort(finalNodes.begin(), finalNodes.end());
 
+    // 8. 将结果存储到缓存
+    {
+        std::unique_lock lock(playerPermissionsCacheMutex_);
+        playerPermissionsCache_[playerUuid] = finalNodes;
+        logger.debug("玩家 '%s' 的权限已缓存。", playerUuid.c_str());
+    }
+
     logger.debug("为玩家 '%s' 计算的总有效权限节点数: %zu", playerUuid.c_str(), finalNodes.size());
     return finalNodes;
 }
@@ -732,7 +792,11 @@ bool PermissionManager::setGroupPriority(const std::string& groupName, int prior
          return false;
     }
     std::string sql = "UPDATE permission_groups SET priority = ? WHERE name = ?;";
-    return db_->executePrepared(sql, {std::to_string(priority), groupName});
+    bool success = db_->executePrepared(sql, {std::to_string(priority), groupName});
+    if (success) {
+        invalidateAllPlayerPermissionsCache(); // 组优先级变化会影响所有玩家的权限计算
+    }
+    return success;
 }
 
 int PermissionManager::getGroupPriority(const std::string& groupName) {
@@ -751,73 +815,43 @@ int PermissionManager::getGroupPriority(const std::string& groupName) {
 
 bool PermissionManager::hasPermission(const std::string& playerUuid, const std::string& permissionNode) {
     auto& logger = ll::mod::NativeMod::current()->getLogger();
-    logger.debug("检查玩家 '%s' 的权限 '%s'", permissionNode.c_str(), playerUuid.c_str());
+    logger.debug("检查玩家 '%s' 的权限 '%s'", playerUuid.c_str(), permissionNode.c_str());
 
-    // getPlayerGroups, getGroupPriority, getPermissionsOfGroup 现在内部使用预处理语句
-    auto groups = getPlayerGroups(playerUuid);
+    // 获取玩家的所有有效权限（这将利用缓存）
+    std::vector<std::string> playerEffectivePermissions = getAllPermissionsForPlayer(playerUuid);
 
-    if (!groups.empty()) {
-        struct GroupInfo { std::string name; int priority; };
-        std::vector<GroupInfo> playerGroupInfos;
-        playerGroupInfos.reserve(groups.size());
-        for (const auto& groupName : groups) {
-            playerGroupInfos.push_back({groupName, getGroupPriority(groupName)});
+    // 遍历玩家的有效权限，检查是否有匹配的规则
+    for (const auto& rule : playerEffectivePermissions) {
+        bool isNegated = false;
+        std::string permissionPattern = rule;
+        if (!permissionPattern.empty() && permissionPattern[0] == '-') {
+            isNegated = true;
+            permissionPattern = permissionPattern.substr(1);
         }
 
-        // 按优先级（降序）对组进行排序
-        std::sort(playerGroupInfos.begin(), playerGroupInfos.end(),
-                  [](const GroupInfo& a, const GroupInfo& b) {
-                      return a.priority > b.priority;
-                  });
+        // 将通配符模式转换为正则表达式
+        // 注意：这里直接使用 wildcardToRegex 辅助函数，它现在是成员函数
+        std::string regexPatternStr = wildcardToRegex(permissionPattern);
 
-        for (const auto& groupInfo : playerGroupInfos) {
-            // getPermissionsOfGroup 已处理继承
-            auto groupPermissions = getPermissionsOfGroup(groupInfo.name);
-            for (const auto& rule : groupPermissions) {
-                bool isNegated = false;
-                std::string permissionPattern = rule;
-                if (!permissionPattern.empty() && permissionPattern[0] == '-') {
-                    isNegated = true;
-                    permissionPattern = permissionPattern.substr(1);
-                }
-
-                // 将通配符模式转换为正则表达式
-                std::string regexPatternStr = "^";
-                for (char c : permissionPattern) {
-                    if (c == '*') {
-                        regexPatternStr += ".*";
-                    } else if (std::string(".\\+?^$[](){}|").find(c) != std::string::npos) {
-                        regexPatternStr += '\\'; // 转义正则表达式特殊字符
-                        regexPatternStr += c;
-                    } else {
-                        regexPatternStr += c;
-                    }
-                }
-                regexPatternStr += "$";
-
-                try {
-                    std::regex permissionRegex(regexPatternStr);
-                    if (std::regex_match(permissionNode, permissionRegex)) {
-                        logger.debug("权限 '%s' 被组 '%s' (优先级 %d) 中的规则 '%s' %s",
-                                     permissionNode.c_str(),
-                                     groupInfo.name.c_str(),
-                                     groupInfo.priority,
-                                     rule.c_str(),
-                                     isNegated ? "拒绝" : "授予");
-                        return !isNegated; // 找到明确规则，立即返回
-                    }
-                } catch (const std::regex_error& e) {
-                     logger.error("从规则 '%s' 生成的无效正则表达式模式: %s", rule.c_str(), e.what());
-                     // 跳过此无效规则
-                }
+        try {
+            std::regex permissionRegex(regexPatternStr);
+            if (std::regex_match(permissionNode, permissionRegex)) {
+                logger.debug("权限 '%s' 被玩家 '%s' 的规则 '%s' %s",
+                             permissionNode.c_str(),
+                             playerUuid.c_str(),
+                             rule.c_str(),
+                             isNegated ? "拒绝" : "授予");
+                return !isNegated; // 找到明确规则，立即返回
             }
+        } catch (const std::regex_error& e) {
+             logger.error("从规则 '%s' 生成的无效正则表达式模式: %s", rule.c_str(), e.what());
+             // 跳过此无效规则
         }
-        logger.debug("权限 '%s' 在玩家的组中未明确匹配。", permissionNode.c_str());
-    } else {
-        logger.debug("玩家 '%s' 不属于任何组。", playerUuid.c_str());
     }
 
-    // 如果没有组规则匹配，则检查权限的默认值
+    logger.debug("权限 '%s' 在玩家 '%s' 的有效权限中未明确匹配。", permissionNode.c_str(), playerUuid.c_str());
+
+    // 如果没有有效权限规则匹配，则检查权限的默认值
     std::string defaultSql = "SELECT default_value FROM permissions WHERE name = ? LIMIT 1;";
     auto rows = db_->queryPrepared(defaultSql, {permissionNode});
 

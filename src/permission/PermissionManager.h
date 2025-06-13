@@ -19,6 +19,7 @@
 #include <vector>
 #include <unordered_map> // For cache
 #include <shared_mutex>  // For thread-safe cache access
+#include <set>           // For internal use in getAllPermissionsForPlayer
 
 namespace BA { namespace db { class IDatabase; } } // 前向声明 IDatabase
 
@@ -123,11 +124,18 @@ private:
     void updateGroupCache(const std::string& groupName, const std::string& groupId);
     // 从数据库加载所有组到缓存（可选，可在 init 时调用）
     void populateGroupCache();
+    // 使特定玩家的权限缓存失效
+    void invalidatePlayerPermissionsCache(const std::string& playerUuid);
+    // 使所有玩家的权限缓存失效
+    void invalidateAllPlayerPermissionsCache();
     // --- 结束缓存相关 ---
 
 
     // 辅助函数：根据名称从权限表或组表中获取 ID (现在主要用于 permissions 表)
     std::string getIdByName(const std::string& table, const std::string& name);
+
+    // 辅助函数：将通配符模式转换为正则表达式字符串
+    std::string wildcardToRegex(const std::string& pattern);
 
 
     db::IDatabase* db_ = nullptr;
@@ -135,6 +143,11 @@ private:
     std::unordered_map<std::string, std::string> groupNameCache_;
     // 用于保护缓存访问的读写锁
     mutable std::shared_mutex cacheMutex_; // mutable 允许在 const 方法中锁定
+
+    // 玩家权限缓存
+    std::unordered_map<std::string, std::vector<std::string>> playerPermissionsCache_;
+    // 用于保护玩家权限缓存的读写锁
+    mutable std::shared_mutex playerPermissionsCacheMutex_;
 }; 
 
 } // namespace permission
