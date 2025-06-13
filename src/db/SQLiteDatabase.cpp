@@ -2,17 +2,22 @@
 #include <stdexcept>
 #include "ll/api/mod/NativeMod.h"
 #include "ll/api/io/Logger.h"
+#include <string> // 确保包含 string
+#include <vector> // 确保包含 vector
+
+using namespace std; // 引入 std 命名空间
+using namespace ll::mod; // 引入 ll::mod 命名空间
 
 namespace BA {
 namespace db {
 
 SQLiteDatabase::SQLiteDatabase(const std::string& dbPath) : db_(nullptr) {
-    auto& logger = ll::mod::NativeMod::current()->getLogger();
+    auto& logger = NativeMod::current()->getLogger();
     logger.info("正在打开 SQLite 数据库: %s", dbPath.c_str());
     if (sqlite3_open(dbPath.c_str(), &db_) != SQLITE_OK) {
-        std::string err(sqlite3_errmsg(db_));
+        string err(sqlite3_errmsg(db_));
         logger.error("打开 SQLite 数据库失败: %s", err.c_str());
-        throw std::runtime_error("打开 SQLite 数据库失败: " + err);
+        throw runtime_error("打开 SQLite 数据库失败: " + err);
     }
     logger.info("SQLite 数据库已成功打开");
 }
@@ -22,12 +27,12 @@ SQLiteDatabase::~SQLiteDatabase() {
 }
 
 bool SQLiteDatabase::execute(const std::string& sql) {
-    auto& logger = ll::mod::NativeMod::current()->getLogger();
+    auto& logger = NativeMod::current()->getLogger();
     logger.debug("正在执行 SQL: %s", sql.c_str());
     char* errMsg = nullptr;
     int rc = sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, &errMsg);
     if (rc != SQLITE_OK) {
-        std::string err(errMsg);
+        string err(errMsg);
         sqlite3_free(errMsg);
         logger.error("SQLite 执行错误: %s", err.c_str());
         return false;
@@ -37,17 +42,17 @@ bool SQLiteDatabase::execute(const std::string& sql) {
 }
 
 std::vector<std::vector<std::string>> SQLiteDatabase::query(const std::string& sql) {
-    auto& logger = ll::mod::NativeMod::current()->getLogger();
+    auto& logger = NativeMod::current()->getLogger();
     logger.debug("正在查询 SQL: %s", sql.c_str());
     sqlite3_stmt* stmt = nullptr;
-    std::vector<std::vector<std::string>> result;
+    vector<vector<string>> result;
     if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
         logger.error("SQLite 准备错误: %s", sqlite3_errmsg(db_));
         return result;
     }
     int cols = sqlite3_column_count(stmt);
     while (sqlite3_step(stmt) == SQLITE_ROW) {
-        std::vector<std::string> row;
+        vector<string> row;
         for (int i = 0; i < cols; ++i) {
             const char* text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, i));
             row.push_back(text ? text : "");
@@ -60,7 +65,7 @@ std::vector<std::vector<std::string>> SQLiteDatabase::query(const std::string& s
 }
 
 void SQLiteDatabase::close() {
-    auto& logger = ll::mod::NativeMod::current()->getLogger();
+    auto& logger = NativeMod::current()->getLogger();
     if (db_) {
         logger.info("正在关闭 SQLite 数据库");
         sqlite3_close(db_);
@@ -70,7 +75,7 @@ void SQLiteDatabase::close() {
 }
 
 bool SQLiteDatabase::executePrepared(const std::string& sql, const std::vector<std::string>& params) {
-    auto& logger = ll::mod::NativeMod::current()->getLogger();
+    auto& logger = NativeMod::current()->getLogger();
     logger.debug("正在执行预处理 SQL: %s", sql.c_str());
     sqlite3_stmt* stmt = nullptr;
 
@@ -105,10 +110,10 @@ bool SQLiteDatabase::executePrepared(const std::string& sql, const std::vector<s
 }
 
 std::vector<std::vector<std::string>> SQLiteDatabase::queryPrepared(const std::string& sql, const std::vector<std::string>& params) {
-    auto& logger = ll::mod::NativeMod::current()->getLogger();
+    auto& logger = NativeMod::current()->getLogger();
     logger.debug("正在查询预处理 SQL: %s", sql.c_str());
     sqlite3_stmt* stmt = nullptr;
-    std::vector<std::vector<std::string>> result;
+    vector<vector<string>> result;
 
     // 准备语句
     if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
@@ -129,7 +134,7 @@ std::vector<std::vector<std::string>> SQLiteDatabase::queryPrepared(const std::s
     // 执行并获取行
     int cols = sqlite3_column_count(stmt);
     while (sqlite3_step(stmt) == SQLITE_ROW) {
-        std::vector<std::string> row;
+        vector<string> row;
         row.reserve(cols); // 为提高效率预留空间
         for (int i = 0; i < cols; ++i) {
             const char* text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, i));
@@ -156,6 +161,31 @@ std::vector<std::vector<std::string>> SQLiteDatabase::queryPrepared(const std::s
 
 DatabaseType SQLiteDatabase::getType() const {
     return DatabaseType::SQLite;
+}
+
+// 新增：获取创建表的 SQL 语句
+std::string SQLiteDatabase::getCreateTableSql(const std::string& tableName, const std::string& columns) const {
+    return "CREATE TABLE IF NOT EXISTS " + tableName + " (" + columns + ");";
+}
+
+// 新增：获取添加列的 SQL 语句
+std::string SQLiteDatabase::getAddColumnSql(const std::string& tableName, const std::string& columnName, const std::string& columnDefinition) const {
+    return "ALTER TABLE " + tableName + " ADD COLUMN " + columnName + " " + columnDefinition + ";";
+}
+
+// 新增：获取创建索引的 SQL 语句
+std::string SQLiteDatabase::getCreateIndexSql(const std::string& indexName, const std::string& tableName, const std::string& columnName) const {
+    return "CREATE INDEX IF NOT EXISTS " + indexName + " ON " + tableName + " (" + columnName + ");";
+}
+
+// 新增：获取插入或忽略冲突的 SQL 语句 (用于 ON CONFLICT)
+std::string SQLiteDatabase::getInsertOrIgnoreSql(const std::string& tableName, const std::string& columns, const std::string& values, const std::string& conflictColumns) const {
+    return "INSERT INTO " + tableName + " (" + columns + ") VALUES (" + values + ") ON CONFLICT (" + conflictColumns + ") DO NOTHING;";
+}
+
+// 新增：获取自增主键的数据库方言定义
+std::string SQLiteDatabase::getAutoIncrementPrimaryKeyDefinition() const {
+    return "INTEGER PRIMARY KEY AUTOINCREMENT";
 }
 
 } // namespace db

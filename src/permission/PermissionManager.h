@@ -20,11 +20,30 @@
 #include <unordered_map> // For cache
 #include <shared_mutex>  // For thread-safe cache access
 #include <set>           // For internal use in getAllPermissionsForPlayer
+#include <thread>        // For worker thread
+#include <queue>         // For task queue
+#include <mutex>         // For mutex
+#include <condition_variable> // For condition variable
 
 namespace BA { namespace db { class IDatabase; } } // 前向声明 IDatabase
 
 namespace BA {
 namespace permission {
+
+// 异步缓存失效任务类型
+enum class CacheInvalidationTaskType {
+    GROUP_MODIFIED,         // 组权限或继承关系改变，需要失效该组及其子组的权限缓存，以及受影响玩家的权限缓存
+    PLAYER_GROUP_CHANGED,   // 玩家组关系改变，需要失效该玩家的权限缓存
+    ALL_GROUPS_MODIFIED,    // 所有组的权限或默认权限改变，需要失效所有组的权限缓存
+    ALL_PLAYERS_MODIFIED,   // 所有玩家的默认权限改变，需要失效所有玩家的权限缓存
+    SHUTDOWN                // 停止工作线程
+};
+
+// 异步缓存失效任务结构体
+struct CacheInvalidationTask {
+    CacheInvalidationTaskType type;
+    std::string data; // 存储组名或玩家UUID等数据
+};
 
 // 新增结构体用于返回组的详细信息
 struct BA_API GroupDetails {
@@ -49,6 +68,8 @@ public:
 
     /// 使用数据库实例初始化管理器（必须在调用其他 API 之前调用）。
     void init(db::IDatabase* db);
+    /// 关闭权限管理器，停止异步工作线程。
+    void shutdown();
 
     /// 注册一个新权限。如果已存在或出错，则返回 false。
     bool registerPermission(const std::string& name, const std::string& description = "", bool defaultValue = false);
@@ -92,7 +113,8 @@ public:
     std::vector<std::string> getPlayerGroupIds(const std::string& playerUuid);
     /// 获取权限组中的玩家
     std::vector<std::string> getPlayersInGroup(const std::string& groupName);
-    /// 获取玩家最终生效的所有权限规则（考虑优先级、继承和否定）
+    /// 获取玩家最终生效的所有权限规则（考虑优先级、继承和否定），这些规则是未展开的原始规则。
+    /// 实际的权限解析（通配符匹配）发生在 hasPermission 函数中。
     std::vector<std::string> getAllPermissionsForPlayer(const std::string& playerUuid);
 
     /// 设置权限组的优先级（优先级越高越优先）
@@ -147,8 +169,8 @@ private:
     void populateGroupPermissionsCache();
     // --- 结束缓存相关 ---
 
-
     db::IDatabase* db_ = nullptr;
+
     // 组名到组 ID 的缓存
     std::unordered_map<std::string, std::string> groupNameCache_;
     // 用于保护组名缓存访问的读写锁
@@ -163,7 +185,26 @@ private:
     std::unordered_map<std::string, std::vector<std::string>> groupPermissionsCache_;
     // 用于保护组权限缓存的读写锁 (新添加)
     mutable std::shared_mutex groupPermissionsCacheMutex_;
-}; 
+
+    // --- 异步任务队列相关 ---
+    std::queue<CacheInvalidationTask> taskQueue_;
+    std::mutex queueMutex_;
+    std::condition_variable condition_;
+    std::thread workerThread_;
+    bool running_ = false; // 控制工作线程的运行状态
+
+    // 将任务推入队列
+    void enqueueTask(CacheInvalidationTask task);
+    // 工作线程处理任务的函数
+    void processTasks();
+
+    // 实际执行缓存失效的内部函数 (由工作线程调用)
+    void _invalidateGroupPermissionsCache(const std::string& groupName);
+    void _invalidatePlayerPermissionsCache(const std::string& playerUuid);
+    void _invalidateAllGroupPermissionsCache();
+    void _invalidateAllPlayerPermissionsCache();
+    // --- 结束异步任务队列相关 ---
+};
 
 } // namespace permission
 } // namespace BA

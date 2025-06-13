@@ -9,6 +9,7 @@
 #include <map> // For getPermissionsOfGroup
 #include <functional> // For getPermissionsOfGroup lambda
 #include <queue> // For BFS in getChildGroupsRecursive
+#include <chrono> // For sleep in worker thread
 
 using namespace std; // 解决 std:: 命名空间问题
 
@@ -26,82 +27,173 @@ void PermissionManager::init(db::IDatabase* db) {
     populateGroupCache(); // 初始化时填充组名缓存
     populateGroupPermissionsCache(); // 初始化时填充组权限缓存
     ::ll::mod::NativeMod::current()->getLogger().info("权限管理器已初始化并填充了组缓存和组权限缓存");
+
+    // 启动异步任务工作线程
+    running_ = true;
+    workerThread_ = std::thread(&PermissionManager::processTasks, this);
+    ::ll::mod::NativeMod::current()->getLogger().info("权限管理器异步缓存失效工作线程已启动。");
+}
+
+void PermissionManager::shutdown() {
+    if (running_) {
+        // 发送停止信号
+        enqueueTask({CacheInvalidationTaskType::SHUTDOWN, ""});
+        // 等待工作线程完成
+        if (workerThread_.joinable()) {
+            workerThread_.join();
+        }
+        running_ = false;
+        ::ll::mod::NativeMod::current()->getLogger().info("权限管理器异步缓存失效工作线程已停止。");
+    }
+}
+
+// 将任务推入队列
+void PermissionManager::enqueueTask(CacheInvalidationTask task) {
+    {
+        std::unique_lock<std::mutex> lock(queueMutex_);
+        taskQueue_.push(std::move(task));
+    }
+    condition_.notify_one(); // 通知工作线程有新任务
+}
+
+// 工作线程处理任务的函数
+void PermissionManager::processTasks() {
+    auto& logger = ::ll::mod::NativeMod::current()->getLogger();
+    while (true) {
+        CacheInvalidationTask task;
+        {
+            std::unique_lock<std::mutex> lock(queueMutex_);
+            condition_.wait(lock, [this] { return !taskQueue_.empty() || !running_; });
+
+            if (!running_ && taskQueue_.empty()) {
+                logger.debug("异步任务队列工作线程收到停止信号并队列为空，正在退出。");
+                break; // 退出循环
+            }
+
+            task = std::move(taskQueue_.front());
+            taskQueue_.pop();
+        } // 锁在此处释放
+
+        try {
+            switch (task.type) {
+                case CacheInvalidationTaskType::GROUP_MODIFIED: {
+                    logger.debug("处理 GROUP_MODIFIED 任务，组名: %s", task.data.c_str());
+                    // 获取所有继承此组的子组，这些子组的权限缓存也需要失效
+                    std::set<string> affectedGroups = getChildGroupsRecursive(task.data);
+                    for (const string& affectedGroup : affectedGroups) {
+                        _invalidateGroupPermissionsCache(affectedGroup);
+                    }
+                    // 获取受影响的玩家
+                    vector<string> affectedPlayers = getAffectedPlayersByGroup(task.data);
+                    for (const string& playerUuid : affectedPlayers) {
+                        _invalidatePlayerPermissionsCache(playerUuid);
+                    }
+                    break;
+                }
+                case CacheInvalidationTaskType::PLAYER_GROUP_CHANGED: {
+                    logger.debug("处理 PLAYER_GROUP_CHANGED 任务，玩家UUID: %s", task.data.c_str());
+                    _invalidatePlayerPermissionsCache(task.data);
+                    break;
+                }
+                case CacheInvalidationTaskType::ALL_GROUPS_MODIFIED: {
+                    logger.debug("处理 ALL_GROUPS_MODIFIED 任务。");
+                    _invalidateAllGroupPermissionsCache();
+                    break;
+                }
+                case CacheInvalidationTaskType::ALL_PLAYERS_MODIFIED: {
+                    logger.debug("处理 ALL_PLAYERS_MODIFIED 任务。");
+                    _invalidateAllPlayerPermissionsCache();
+                    break;
+                }
+                case CacheInvalidationTaskType::SHUTDOWN: {
+                    logger.debug("异步任务队列工作线程收到 SHUTDOWN 任务，正在退出。");
+                    return; // 退出线程
+                }
+            }
+        } catch (const std::exception& e) {
+            logger.error("异步缓存失效任务处理异常: %s", e.what());
+        } catch (...) {
+            logger.error("异步缓存失效任务处理未知异常。");
+        }
+    }
+}
+
+// 实际执行缓存失效的内部函数
+void PermissionManager::_invalidateGroupPermissionsCache(const string& groupName) {
+    std::unique_lock<std::shared_mutex> lock(groupPermissionsCacheMutex_);
+    groupPermissionsCache_.erase(groupName);
+    ::ll::mod::NativeMod::current()->getLogger().debug("组 '%s' 的权限缓存已失效 (由工作线程)。", groupName.c_str());
+}
+
+void PermissionManager::_invalidatePlayerPermissionsCache(const string& playerUuid) {
+    std::unique_lock<std::shared_mutex> lock(playerPermissionsCacheMutex_);
+    playerPermissionsCache_.erase(playerUuid);
+    ::ll::mod::NativeMod::current()->getLogger().debug("玩家 '%s' 的权限缓存已失效 (由工作线程)。", playerUuid.c_str());
+}
+
+void PermissionManager::_invalidateAllGroupPermissionsCache() {
+    std::unique_lock<std::shared_mutex> lock(groupPermissionsCacheMutex_);
+    groupPermissionsCache_.clear();
+    ::ll::mod::NativeMod::current()->getLogger().debug("所有组的权限缓存已失效 (由工作线程)。");
+}
+
+void PermissionManager::_invalidateAllPlayerPermissionsCache() {
+    std::unique_lock<std::shared_mutex> lock(playerPermissionsCacheMutex_);
+    playerPermissionsCache_.clear();
+    ::ll::mod::NativeMod::current()->getLogger().debug("所有玩家的权限缓存已失效 (由工作线程)。");
 }
 
 void PermissionManager::ensureTables() {
     auto& logger = ::ll::mod::NativeMod::current()->getLogger();
-    logger.info("确保权限表存在...");
+    logger.debug("确保权限表存在...");
 
     auto executeAndLog = [&](const string& sql, const string& description) {
         bool success = db_->execute(sql);
-        logger.info("为 '%s' 执行 SQL: %s. 结果: %s", description.c_str(), sql.c_str(), success ? "成功" : "失败");
-        // 注意：ALTER TABLE ADD COLUMN 如果列已存在，在某些数据库（如 SQLite）上可能会返回 false 或抛出异常（取决于实现），但这不一定是关键错误。
-        // CREATE TABLE IF NOT EXISTS 应该总是返回 true（除非有严重错误）。
+        logger.debug("为 '%s' 执行 SQL: %s. 结果: %s", description.c_str(), sql.c_str(), success ? "成功" : "失败");
         return success;
     };
 
-    db::DatabaseType dbType = db_->getType();
-    string createPermissionsTableSql;
-    string createPermissionGroupsTableSql;
-
-    if (dbType == db::DatabaseType::SQLite) {
-        logger.info("使用 SQLite 语法创建表...");
-        createPermissionsTableSql = "CREATE TABLE IF NOT EXISTS permissions (id INTEGER PRIMARY KEY, name VARCHAR(255) UNIQUE NOT NULL, description TEXT, default_value INT NOT NULL DEFAULT 0);";
-        createPermissionGroupsTableSql = "CREATE TABLE IF NOT EXISTS permission_groups (id INTEGER PRIMARY KEY, name VARCHAR(255) UNIQUE NOT NULL, description TEXT);";
-    } else if (dbType == db::DatabaseType::MySQL) {
-        logger.info("使用 MySQL 语法创建表...");
-        createPermissionsTableSql = "CREATE TABLE IF NOT EXISTS permissions (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) UNIQUE NOT NULL, description TEXT, default_value INT NOT NULL DEFAULT 0);";
-        createPermissionGroupsTableSql = "CREATE TABLE IF NOT EXISTS permission_groups (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) UNIQUE NOT NULL, description TEXT);";
-    } else if (dbType == db::DatabaseType::PostgreSQL) {
-        logger.info("使用 PostgreSQL 语法创建表...");
-        createPermissionsTableSql = "CREATE TABLE IF NOT EXISTS permissions (id SERIAL PRIMARY KEY, name VARCHAR(255) UNIQUE NOT NULL, description TEXT, default_value INT NOT NULL DEFAULT 0);";
-        createPermissionGroupsTableSql = "CREATE TABLE IF NOT EXISTS permission_groups (id SERIAL PRIMARY KEY, name VARCHAR(255) UNIQUE NOT NULL, description TEXT);";
-    } else {
-        logger.error("未知数据库类型，无法创建表。");
-        return; // Exit if database type is unknown
-    }
-
-    executeAndLog(createPermissionsTableSql, "创建 permissions 表");
-    executeAndLog(createPermissionGroupsTableSql, "创建 permission_groups 表");
+    // 使用数据库方言方法创建表
+    executeAndLog(
+        db_->getCreateTableSql(
+            "permissions",
+            "id " + db_->getAutoIncrementPrimaryKeyDefinition() + ", "
+            "name VARCHAR(255) UNIQUE NOT NULL, "
+            "description TEXT, "
+            "default_value INT NOT NULL DEFAULT 0"
+        ),
+        "创建 permissions 表"
+    );
+    executeAndLog(
+        db_->getCreateTableSql(
+            "permission_groups",
+            "id " + db_->getAutoIncrementPrimaryKeyDefinition() + ", "
+            "name VARCHAR(255) UNIQUE NOT NULL, "
+            "description TEXT"
+        ),
+        "创建 permission_groups 表"
+    );
 
     // group_permissions, group_inheritance, player_groups 表的语法是通用的
     executeAndLog("CREATE TABLE IF NOT EXISTS group_permissions (group_id INT NOT NULL, permission_rule VARCHAR(255) NOT NULL, PRIMARY KEY (group_id, permission_rule), FOREIGN KEY (group_id) REFERENCES permission_groups(id) ON DELETE CASCADE);", "创建 group_permissions 表");
     executeAndLog("CREATE TABLE IF NOT EXISTS group_inheritance (group_id INT NOT NULL, parent_group_id INT NOT NULL, PRIMARY KEY (group_id, parent_group_id), FOREIGN KEY (group_id) REFERENCES permission_groups(id) ON DELETE CASCADE, FOREIGN KEY (parent_group_id) REFERENCES permission_groups(id) ON DELETE CASCADE);", "创建 group_inheritance 表");
     executeAndLog("CREATE TABLE IF NOT EXISTS player_groups (player_uuid VARCHAR(36) NOT NULL, group_id INT NOT NULL, PRIMARY KEY (player_uuid, group_id), FOREIGN KEY (group_id) REFERENCES permission_groups(id) ON DELETE CASCADE);", "创建 player_groups 表");
 
-    // ALTER TABLE ADD COLUMN 语法是通用的，但 IF NOT EXISTS 支持不同。
-    // 当前实现是直接执行并依赖 db_->execute 处理错误，这对于 ADD COLUMN 是可接受的。
-    executeAndLog("ALTER TABLE permission_groups ADD COLUMN priority INT NOT NULL DEFAULT 0;", "向 permission_groups 添加 priority 列 (可能已存在)");
+    // 使用数据库方言方法添加列
+    executeAndLog(db_->getAddColumnSql("permission_groups", "priority", "INT NOT NULL DEFAULT 0"), "向 permission_groups 添加 priority 列 (可能已存在)");
 
     // --- 添加索引以优化查询 ---
-    logger.info("尝试创建索引 (如果不存在)...");
-    // db::DatabaseType dbType = db_->getType(); // Already got dbType above
+    logger.debug("尝试创建索引 (如果不存在)...");
 
-    auto createIndexIfNotExist = [&](const string& indexName, const string& tableName, const string& columnName) {
-        string sql;
-        if (dbType == db::DatabaseType::PostgreSQL || dbType == db::DatabaseType::SQLite) {
-            sql = "CREATE INDEX IF NOT EXISTS " + indexName + " ON " + tableName + " (" + columnName + ");";
-        } else if (dbType == db::DatabaseType::MySQL) {
-            // MySQL does not support IF NOT EXISTS for CREATE INDEX directly.
-            // The MySQLDatabase::execute method is expected to handle the duplicate key error (1061) as a warning.
-            // We just attempt to create it.
-            sql = "CREATE INDEX " + indexName + " ON " + tableName + " (" + columnName + ");";
-        } else {
-             logger.error("未知数据库类型，无法创建索引。");
-             return false;
-        }
-        return executeAndLog(sql, "为 " + tableName + "." + columnName + " 创建索引 " + indexName);
-    };
+    // 使用数据库方言方法创建索引
+    executeAndLog(db_->getCreateIndexSql("idx_permissions_name", "permissions", "name"), "为 permissions.name 创建索引 idx_permissions_name");
+    executeAndLog(db_->getCreateIndexSql("idx_permission_groups_name", "permission_groups", "name"), "为 permission_groups.name 创建索引 idx_permission_groups_name");
+    executeAndLog(db_->getCreateIndexSql("idx_player_groups_uuid", "player_groups", "player_uuid"), "为 player_groups.player_uuid 创建索引 idx_player_groups_uuid");
 
-    createIndexIfNotExist("idx_permissions_name", "permissions", "name");
-    createIndexIfNotExist("idx_permission_groups_name", "permission_groups", "name");
-    createIndexIfNotExist("idx_player_groups_uuid", "player_groups", "player_uuid");
-
-    logger.info("完成创建索引尝试。");
+    logger.debug("完成创建索引尝试。");
     // --- 结束添加索引 ---
 
-
-    logger.info("完成确保权限表的操作。");
+    logger.debug("完成确保权限表的操作。");
 }
 
 // 辅助函数：通过名称获取单个 ID，如果未找到或出错则返回空字符串
@@ -123,7 +215,7 @@ string sql = "SELECT id FROM " + table + " WHERE name = ? LIMIT 1;";
 void PermissionManager::populateGroupCache() {
     auto& logger = ::ll::mod::NativeMod::current()->getLogger();
     try {
-        logger.info("正在填充权限组缓存...");
+        logger.debug("正在填充权限组缓存...");
         string sql = "SELECT id, name FROM permission_groups;";
         auto rows = db_->queryPrepared(sql, {}); // 获取所有组的 ID 和名称
 
@@ -136,7 +228,7 @@ void PermissionManager::populateGroupCache() {
                 groupNameCache_[row[1]] = row[0]; // 缓存 name -> id
             }
         }
-        logger.info("权限组缓存已填充，共 %zu 个条目。", groupNameCache_.size());
+        logger.debug("权限组缓存已填充，共 %zu 个条目。", groupNameCache_.size());
     } catch (const exception& e) {
         logger.error("填充权限组缓存时异常: %s", e.what());
         // 关键：如果sqlite文件损坏/路径错误/被锁，直接跳过，避免阻塞
@@ -195,7 +287,7 @@ void PermissionManager::invalidateGroupCache(const string& groupName) {
 void PermissionManager::populateGroupPermissionsCache() {
     auto& logger = ::ll::mod::NativeMod::current()->getLogger();
     try {
-        logger.info("正在填充组权限缓存...");
+        logger.debug("正在填充组权限缓存...");
         string sql = "SELECT name FROM permission_groups;";
         auto rows = db_->queryPrepared(sql, {}); // 获取所有组的名称
 
@@ -274,7 +366,7 @@ void PermissionManager::populateGroupPermissionsCache() {
                 groupPermissionsCache_[groupName] = finalPerms; // 存储到组权限缓存
             }
         }
-        logger.info("组权限缓存已填充，共 %zu 个条目。", groupPermissionsCache_.size());
+        logger.debug("组权限缓存已填充，共 %zu 个条目。", groupPermissionsCache_.size());
     } catch (const exception& e) {
         logger.error("填充组权限缓存时异常: %s", e.what());
         std::unique_lock<std::shared_mutex> lock(groupPermissionsCacheMutex_);
@@ -283,15 +375,15 @@ void PermissionManager::populateGroupPermissionsCache() {
 }
 
 void PermissionManager::invalidateGroupPermissionsCache(const string& groupName) {
-    std::unique_lock<std::shared_mutex> lock(groupPermissionsCacheMutex_);
-    groupPermissionsCache_.erase(groupName);
-    ::ll::mod::NativeMod::current()->getLogger().debug("组 '%s' 的权限缓存已失效。", groupName.c_str());
+    // 将任务推入队列，而不是直接失效
+    enqueueTask({CacheInvalidationTaskType::GROUP_MODIFIED, groupName});
+    ::ll::mod::NativeMod::current()->getLogger().debug("组 '%s' 的权限缓存失效任务已入队。", groupName.c_str());
 }
 
 void PermissionManager::invalidateAllGroupPermissionsCache() {
-    std::unique_lock<std::shared_mutex> lock(groupPermissionsCacheMutex_);
-    groupPermissionsCache_.clear();
-    ::ll::mod::NativeMod::current()->getLogger().debug("所有组的权限缓存已失效。");
+    // 将任务推入队列，而不是直接失效
+    enqueueTask({CacheInvalidationTaskType::ALL_GROUPS_MODIFIED, ""});
+    ::ll::mod::NativeMod::current()->getLogger().debug("所有组的权限缓存失效任务已入队。");
 }
 
 // --- 结束缓存实现 ---
@@ -299,11 +391,16 @@ void PermissionManager::invalidateAllGroupPermissionsCache() {
 
 bool PermissionManager::registerPermission(const string& name, const string& description, bool defaultValue) {
     auto& logger = ::ll::mod::NativeMod::current()->getLogger();
-    logger.info("注册权限 '%s'，默认值 %s", name.c_str(), defaultValue ? "true" : "false");
+    logger.debug("注册权限 '%s'，默认值 %s", name.c_str(), defaultValue ? "true" : "false");
     string defaultValueStr = defaultValue ? "1" : "0";
 
-    // 先尝试插入
-    string insertSql = "INSERT INTO permissions (name, description, default_value) VALUES (?, ?, ?) ON CONFLICT (name) DO NOTHING;";
+    // 先尝试插入，使用数据库方言的插入或忽略冲突语句
+    string insertSql = db_->getInsertOrIgnoreSql(
+        "permissions",
+        "name, description, default_value",
+        "?, ?, ?",
+        "name" // 冲突列
+    );
     bool insertOk = db_->executePrepared(insertSql, {name, description, defaultValueStr});
 
     // 然后更新 (以防它已经存在)
@@ -314,10 +411,10 @@ bool PermissionManager::registerPermission(const string& name, const string& des
     // 更健壮的检查可能涉及检查受影响的行数（如果数据库 API 支持）。
     // 目前，如果 execute 调用没有返回 false（表示数据库错误），我们假设成功。
     if (insertOk && updateOk) {
-        // 权限注册/更新可能影响所有玩家的默认权限，这里保留全量失效
-        invalidateAllPlayerPermissionsCache(); 
+        // 权限注册/更新可能影响所有玩家的默认权限，这里将任务推入队列
+        enqueueTask({CacheInvalidationTaskType::ALL_PLAYERS_MODIFIED, ""});
         // 注册新权限也可能影响所有组的通配符权限，因此需要使所有组权限缓存失效
-        invalidateAllGroupPermissionsCache();
+        enqueueTask({CacheInvalidationTaskType::ALL_GROUPS_MODIFIED, ""});
         return true;
     }
     return false; // 或者如果 insert 是 IGNORE，则可能仅 updateOk
@@ -343,21 +440,15 @@ bool PermissionManager::createGroup(const string& groupName, const string& descr
         logger.error("尝试创建组 '%s' 时数据库未初始化", groupName.c_str());
         return false;
     }
-    logger.info("尝试创建组 '%s'...", groupName.c_str());
+    logger.debug("尝试创建组 '%s'...", groupName.c_str());
 
-    db::DatabaseType dbType = db_->getType();
-    string insertSql;
-
-    if (dbType == db::DatabaseType::SQLite || dbType == db::DatabaseType::PostgreSQL) {
-        // SQLite and PostgreSQL support ON CONFLICT DO NOTHING
-        insertSql = "INSERT INTO permission_groups (name, description) VALUES (?, ?) ON CONFLICT (name) DO NOTHING;";
-    } else if (dbType == db::DatabaseType::MySQL) {
-        // MySQL uses INSERT IGNORE
-        insertSql = "INSERT IGNORE INTO permission_groups (name, description) VALUES (?, ?);";
-    } else {
-        logger.error("未知数据库类型，无法创建组。");
-        return false;
-    }
+    // 使用数据库方言的插入或忽略冲突语句
+    string insertSql = db_->getInsertOrIgnoreSql(
+        "permission_groups",
+        "name, description",
+        "?, ?",
+        "name" // 冲突列
+    );
 
     // Execute the insert statement. We don't need the returned ID here,
     // we will query for it by name afterwards.
@@ -370,10 +461,10 @@ bool PermissionManager::createGroup(const string& groupName, const string& descr
 
     if (!gid.empty()) {
         // Successfully got the ID, either from a new insert or an existing group
-        logger.info("组 '%s' 已存在或已创建 (ID: %s)。", groupName.c_str(), gid.c_str());
+        logger.debug("组 '%s' 已存在或已创建 (ID: %s)。", groupName.c_str(), gid.c_str());
         updateGroupCache(groupName, gid); // Update group name cache
         invalidateGroupPermissionsCache(groupName); // Invalidate this group's permission cache
-        logger.info("组 '%s' (ID: %s) 缓存已更新。", groupName.c_str(), gid.c_str());
+        logger.debug("组 '%s' (ID: %s) 缓存已更新。", groupName.c_str(), gid.c_str());
         return true; // Indicate success
     } else {
         // If we still can't get the ID by name, something went wrong during insert
@@ -413,7 +504,7 @@ bool PermissionManager::deleteGroup(const string& groupName) {
         logger.error("尝试删除组 '%s' 时数据库未初始化", groupName.c_str());
         return false;
     }
-    logger.info("尝试删除组 '%s'...", groupName.c_str());
+    logger.debug("尝试删除组 '%s'...", groupName.c_str());
 
     // 使用缓存获取 ID
     string gid = getCachedGroupId(groupName);
@@ -434,18 +525,11 @@ bool PermissionManager::deleteGroup(const string& groupName) {
 
     if (success) {
         invalidateGroupCache(groupName); // 如果删除成功，则使组名缓存失效
-        invalidateGroupPermissionsCache(groupName); // 使被删除组的权限缓存失效
-        // 使所有受影响的子组的权限缓存失效
-        for (const string& childGroup : childGroups) {
-            invalidateGroupPermissionsCache(childGroup);
-        }
-        // 对受影响的玩家调用 invalidatePlayerPermissionsCache
-        for (const string& playerUuid : affectedPlayers) {
-            invalidatePlayerPermissionsCache(playerUuid);
-        }
-        logger.info("删除组 '%s' (ID: %s) 成功，相关缓存已失效。", groupName.c_str(), gid.c_str());
+        // 将 GROUP_MODIFIED 任务推入队列，由工作线程处理后续的子组和玩家失效
+        enqueueTask({CacheInvalidationTaskType::GROUP_MODIFIED, groupName});
+        logger.debug("删除组 '%s' (ID: %s) 成功，相关缓存失效任务已入队。", groupName.c_str(), gid.c_str());
     } else {
-         logger.info("删除组 '%s' (ID: %s) 失败。", groupName.c_str(), gid.c_str());
+        logger.debug("删除组 '%s' (ID: %s) 失败。", groupName.c_str(), gid.c_str());
         // logger.error("数据库错误详情: %s", db_->getLastError().c_str());
     }
     return success;
@@ -470,21 +554,19 @@ bool PermissionManager::addPermissionToGroup(const string& groupName, const stri
     logger.debug("向组 '%s' (GID: %s) 添加权限规则 '%s'",
                 permissionRule.c_str(), groupName.c_str(), gid.c_str());
 
-    // MySQL 使用 INSERT IGNORE, SQLite 使用 INSERT OR IGNORE, PostgreSQL 使用 ON CONFLICT
-    // 直接插入组 ID 和权限规则字符串。
-string sql = "INSERT INTO group_permissions (group_id, permission_rule) VALUES (?, ?) ON CONFLICT (group_id, permission_rule) DO NOTHING;";
-    bool success = db_->executePrepared(sql, {gid, permissionRule});
+    // 使用数据库方言的插入或忽略冲突语句
+    string insertSql = db_->getInsertOrIgnoreSql(
+        "group_permissions",
+        "group_id, permission_rule",
+        "?, ?",
+        "group_id, permission_rule" // 冲突列
+    );
+    bool success = db_->executePrepared(insertSql, {gid, permissionRule});
     if (success) {
-        // 组权限变化，使该组及其所有子组的权限缓存失效
-        std::set<string> affectedGroups = getChildGroupsRecursive(groupName);
-        for (const string& affectedGroup : affectedGroups) {
-            invalidateGroupPermissionsCache(affectedGroup);
-        }
-        // 获取受影响的玩家
-        vector<string> affectedPlayers = getAffectedPlayersByGroup(groupName);
-        for (const string& playerUuid : affectedPlayers) {
-            invalidatePlayerPermissionsCache(playerUuid);
-        }
+        // 组权限变化，将 GROUP_MODIFIED 任务推入队列
+        enqueueTask({CacheInvalidationTaskType::GROUP_MODIFIED, groupName});
+        logger.debug("向组 '%s' (GID: %s) 添加权限规则 '%s' 成功，缓存失效任务已入队。",
+                    groupName.c_str(), gid.c_str(), permissionRule.c_str());
     }
     return success;
 }
@@ -504,22 +586,15 @@ bool PermissionManager::removePermissionFromGroup(const string& groupName, const
     }
 
     //直接根据规则字符串删除。
-    logger.info("从组 '%s' (GID: %s) 移除权限规则 '%s'",
-                permissionRule.c_str(), groupName.c_str(), gid.c_str());
+    logger.debug("从组 '%s' (GID: %s) 移除权限规则 '%s'", permissionRule.c_str(), groupName.c_str(), gid.c_str());
 
-string sql = "DELETE FROM group_permissions WHERE group_id = ? AND permission_rule = ?;";
+    string sql     = "DELETE FROM group_permissions WHERE group_id = ? AND permission_rule = ?;";
     bool success = db_->executePrepared(sql, {gid, permissionRule});
     if (success) {
-        // 组权限变化，使该组及其所有子组的权限缓存失效
-        std::set<string> affectedGroups = getChildGroupsRecursive(groupName);
-        for (const string& affectedGroup : affectedGroups) {
-            invalidateGroupPermissionsCache(affectedGroup);
-        }
-        // 获取受影响的玩家
-        vector<string> affectedPlayers = getAffectedPlayersByGroup(groupName);
-        for (const string& playerUuid : affectedPlayers) {
-            invalidatePlayerPermissionsCache(playerUuid);
-        }
+        // 组权限变化，将 GROUP_MODIFIED 任务推入队列
+        enqueueTask({CacheInvalidationTaskType::GROUP_MODIFIED, groupName});
+        logger.debug("从组 '%s' (GID: %s) 移除权限规则 '%s' 成功，缓存失效任务已入队。",
+                    groupName.c_str(), gid.c_str(), permissionRule.c_str());
     }
     return success;
 }
@@ -560,6 +635,7 @@ vector<string> PermissionManager::getParentGroups(const string& groupName) {
 }
 
 bool PermissionManager::addGroupInheritance(const string& groupName, const string& parentGroupName) {
+    auto&  logger = ::ll::mod::NativeMod::current()->getLogger();
     string gid = getCachedGroupId(groupName); // 使用缓存
     string pgid = getCachedGroupId(parentGroupName); // 使用缓存
     if (gid.empty() || pgid.empty()) {
@@ -571,25 +647,24 @@ bool PermissionManager::addGroupInheritance(const string& groupName, const strin
         return false;
     }
     // TODO: 添加循环检测？
-    // MySQL 使用 INSERT IGNORE, PostgreSQL 使用 ON CONFLICT
-    string sql = "INSERT INTO group_inheritance (group_id, parent_group_id) VALUES (?, ?) ON CONFLICT (group_id, parent_group_id) DO NOTHING;";
-    bool success = db_->executePrepared(sql, {gid, pgid});
+    // 使用数据库方言的插入或忽略冲突语句
+    string insertSql = db_->getInsertOrIgnoreSql(
+        "group_inheritance",
+        "group_id, parent_group_id",
+        "?, ?",
+        "group_id, parent_group_id" // 冲突列
+    );
+    bool success = db_->executePrepared(insertSql, {gid, pgid});
     if (success) {
-        // 继承关系变化，使子组及其所有子组的权限缓存失效
-        std::set<string> affectedGroups = getChildGroupsRecursive(groupName);
-        for (const string& affectedGroup : affectedGroups) {
-            invalidateGroupPermissionsCache(affectedGroup);
-        }
-        // 获取受影响的玩家
-        vector<string> affectedPlayers = getAffectedPlayersByGroup(groupName);
-        for (const string& playerUuid : affectedPlayers) {
-            invalidatePlayerPermissionsCache(playerUuid);
-        }
+        // 继承关系变化，将 GROUP_MODIFIED 任务推入队列
+        enqueueTask({CacheInvalidationTaskType::GROUP_MODIFIED, groupName});
+        logger.debug("添加组 '%s' 继承 '%s' 成功，缓存失效任务已入队。", groupName.c_str(), parentGroupName.c_str());
     }
     return success;
 }
 
 bool PermissionManager::removeGroupInheritance(const string& groupName, const string& parentGroupName) {
+    auto&  logger = ::ll::mod::NativeMod::current()->getLogger();
     string gid = getCachedGroupId(groupName); // 使用缓存
     string pgid = getCachedGroupId(parentGroupName); // 使用缓存
     if (gid.empty() || pgid.empty()) {
@@ -598,16 +673,9 @@ bool PermissionManager::removeGroupInheritance(const string& groupName, const st
     string sql = "DELETE FROM group_inheritance WHERE group_id = ? AND parent_group_id = ?;";
     bool success = db_->executePrepared(sql, {gid, pgid});
     if (success) {
-        // 继承关系变化，使子组及其所有子组的权限缓存失效
-        std::set<string> affectedGroups = getChildGroupsRecursive(groupName);
-        for (const string& affectedGroup : affectedGroups) {
-            invalidateGroupPermissionsCache(affectedGroup);
-        }
-        // 获取受影响的玩家
-        vector<string> affectedPlayers = getAffectedPlayersByGroup(groupName);
-        for (const string& playerUuid : affectedPlayers) {
-            invalidatePlayerPermissionsCache(playerUuid);
-        }
+        // 继承关系变化，将 GROUP_MODIFIED 任务推入队列
+        enqueueTask({CacheInvalidationTaskType::GROUP_MODIFIED, groupName});
+        logger.debug("移除组 '%s' 继承 '%s' 成功，缓存失效任务已入队。", groupName.c_str(), parentGroupName.c_str());
     }
     return success;
 }
@@ -662,7 +730,7 @@ vector<string> PermissionManager::getPermissionsOfGroup(const string& groupName)
 
     // --- 解析步骤 ---
     std::map<string, bool> effectiveState; // true = 授予, false = 否定
-    // auto& logger = ::ll::mod::NativeMod::current()->getLogger(); // 获取 logger 用于调试消息 (已在函数开头获取)
+
 
     for (const auto& rule : allRules) {
         if (rule.empty()) continue;
@@ -713,24 +781,30 @@ vector<string> PermissionManager::getPermissionsOfGroup(const string& groupName)
 
 bool PermissionManager::addPlayerToGroup(const string& playerUuid, const string& groupName) {
     auto& logger = ::ll::mod::NativeMod::current()->getLogger();
-    logger.info("将玩家 '%s' 添加到组 '%s'", playerUuid.c_str(), groupName.c_str());
+    logger.debug("将玩家 '%s' 添加到组 '%s'", playerUuid.c_str(), groupName.c_str());
     string gid = getCachedGroupId(groupName); // 使用缓存
     if (gid.empty()) {
         logger.warn("AddPlayerToGroup: 组 '%s' 未找到 (来自缓存或数据库)。", groupName.c_str());
         return false;
     }
-    // MySQL 使用 INSERT IGNORE, SQLite 使用 INSERT OR IGNORE, PostgreSQL 使用 ON CONFLICT
-    string sql = "INSERT INTO player_groups (player_uuid, group_id) VALUES (?, ?) ON CONFLICT (player_uuid, group_id) DO NOTHING;";
-    bool success = db_->executePrepared(sql, {playerUuid, gid});
+    // 使用数据库方言的插入或忽略冲突语句
+    string insertSql = db_->getInsertOrIgnoreSql(
+        "player_groups",
+        "player_uuid, group_id",
+        "?, ?",
+        "player_uuid, group_id" // 冲突列
+    );
+    bool success = db_->executePrepared(insertSql, {playerUuid, gid});
     if (success) {
-        invalidatePlayerPermissionsCache(playerUuid); // 玩家组变化，使该玩家缓存失效
+        enqueueTask({CacheInvalidationTaskType::PLAYER_GROUP_CHANGED, playerUuid}); // 玩家组变化，将任务推入队列
+        logger.debug("将玩家 '%s' 添加到组 '%s' 成功，缓存失效任务已入队。", playerUuid.c_str(), groupName.c_str());
     }
     return success;
 }
 
 bool PermissionManager::removePlayerFromGroup(const string& playerUuid, const string& groupName) {
     auto& logger = ::ll::mod::NativeMod::current()->getLogger();
-    logger.info("从组 '%s' 移除玩家 '%s'", playerUuid.c_str(), groupName.c_str());
+    logger.debug("从组 '%s' 移除玩家 '%s'", playerUuid.c_str(), groupName.c_str());
     string gid = getCachedGroupId(groupName); // 使用缓存
      if (gid.empty()) {
         // 尝试移除时，如果组不存在 (来自缓存或数据库)，则不发出警告
@@ -739,7 +813,8 @@ bool PermissionManager::removePlayerFromGroup(const string& playerUuid, const st
     string sql = "DELETE FROM player_groups WHERE player_uuid = ? AND group_id = ?;";
     bool success = db_->executePrepared(sql, {playerUuid, gid});
     if (success) {
-        invalidatePlayerPermissionsCache(playerUuid); // 玩家组变化，使该玩家缓存失效
+        enqueueTask({CacheInvalidationTaskType::PLAYER_GROUP_CHANGED, playerUuid}); // 玩家组变化，将任务推入队列
+        logger.debug("从组 '%s' 移除玩家 '%s' 成功，缓存失效任务已入队。", playerUuid.c_str(), groupName.c_str());
     }
     return success;
 }
@@ -800,18 +875,16 @@ string PermissionManager::wildcardToRegex(const string& pattern) {
     return regexPatternStr;
 }
 
-// 使特定玩家的权限缓存失效
+// 使特定玩家的权限缓存失效 (现在将任务推入队列)
 void PermissionManager::invalidatePlayerPermissionsCache(const string& playerUuid) {
-    std::unique_lock<std::shared_mutex> lock(playerPermissionsCacheMutex_);
-    playerPermissionsCache_.erase(playerUuid);
-    ::ll::mod::NativeMod::current()->getLogger().debug("玩家 '%s' 的权限缓存已失效。", playerUuid.c_str());
+    enqueueTask({CacheInvalidationTaskType::PLAYER_GROUP_CHANGED, playerUuid});
+    ::ll::mod::NativeMod::current()->getLogger().debug("玩家 '%s' 的权限缓存失效任务已入队。", playerUuid.c_str());
 }
 
-// 使所有玩家的权限缓存失效
+// 使所有玩家的权限缓存失效 (现在将任务推入队列)
 void PermissionManager::invalidateAllPlayerPermissionsCache() {
-    std::unique_lock<std::shared_mutex> lock(playerPermissionsCacheMutex_);
-    playerPermissionsCache_.clear();
-    ::ll::mod::NativeMod::current()->getLogger().debug("所有玩家的权限缓存已失效。");
+    enqueueTask({CacheInvalidationTaskType::ALL_PLAYERS_MODIFIED, ""});
+    ::ll::mod::NativeMod::current()->getLogger().debug("所有玩家的权限缓存失效任务已入队。");
 }
 
 // 新增辅助函数：递归获取所有子组
@@ -872,7 +945,7 @@ vector<string> PermissionManager::getAffectedPlayersByGroup(const string& groupN
 }
 
 
-vector<string> PermissionManager::getAllPermissionsForPlayer(const string& playerUuid) {
+std::vector<std::string> PermissionManager::getAllPermissionsForPlayer(const std::string& playerUuid) {
     auto& logger = ::ll::mod::NativeMod::current()->getLogger();
     logger.debug("为玩家 '%s' 计算所有有效权限节点", playerUuid.c_str());
 
@@ -887,25 +960,19 @@ vector<string> PermissionManager::getAllPermissionsForPlayer(const string& playe
     } // 共享锁在此处释放
 
     // 2. 缓存未命中，需要计算并写入缓存
-    std::set<string> effectiveNodes; // 存储最终授予的节点
-    vector<string> positiveRules;
-    vector<string> negativeRules;
+    vector<string> finalRules; // 存储最终的规则列表
 
-    // 1. 获取所有已注册的权限节点名称
-    vector<string> allRegisteredNodes = getAllPermissions();
-    std::set<string> allRegisteredNodesSet(allRegisteredNodes.begin(), allRegisteredNodes.end()); // 用于更快的查找（如果需要）
-
-    // 2. 添加默认权限
+    // 1. 收集默认权限规则
     string defaultPermsSql = "SELECT name FROM permissions WHERE default_value = 1;";
     auto defaultRows = db_->queryPrepared(defaultPermsSql, {});
     for (const auto& row : defaultRows) {
         if (!row.empty()) {
-            effectiveNodes.insert(row[0]);
-            logger.debug("玩家 '%s' 初始拥有默认节点: %s", playerUuid.c_str(), row[0].c_str());
+            finalRules.push_back(row[0]);
+            logger.debug("玩家 '%s' 初始拥有默认规则: %s", playerUuid.c_str(), row[0].c_str());
         }
     }
 
-    // 3. 获取玩家的组并按优先级排序
+    // 2. 获取玩家的组并按优先级排序
     auto groups = getPlayerGroups(playerUuid);
     if (!groups.empty()) {
         struct GroupInfo { string name; int priority; };
@@ -914,110 +981,37 @@ vector<string> PermissionManager::getAllPermissionsForPlayer(const string& playe
         for (const auto& groupName : groups) {
             playerGroupInfos.push_back({groupName, getGroupPriority(groupName)});
         }
+        // 按照优先级从低到高排序，以便高优先级的规则后应用
         sort(playerGroupInfos.begin(), playerGroupInfos.end(),
-                  [](const GroupInfo& a, const GroupInfo& b) { return a.priority > b.priority; });
+                  [](const GroupInfo& a, const GroupInfo& b) { return a.priority < b.priority; });
 
-        logger.debug("玩家 '%s' 的组按优先级排序:", playerUuid.c_str());
+        logger.debug("玩家 '%s' 的组按优先级排序 (从低到高):", playerUuid.c_str());
         for(const auto& gi : playerGroupInfos) { logger.debug("- 组: %s, 优先级: %d", gi.name.c_str(), gi.priority); }
 
-        // 4. 按优先级顺序收集所有组的规则
+        // 3. 按优先级顺序收集所有组的规则
         for (const auto& groupInfo : playerGroupInfos) {
             // getPermissionsOfGroup 返回此组的已解析规则（包括继承的），并利用了组权限缓存
             auto groupRules = getPermissionsOfGroup(groupInfo.name);
             logger.debug("从组 '%s' (优先级 %d) 收集规则: %zu 条规则", groupInfo.name.c_str(), groupInfo.priority, groupRules.size());
             for (const auto& rule : groupRules) {
-                 if (rule.empty()) continue;
-                 if (rule[0] == '-') {
-                     if (rule.length() > 1) { // 避免添加仅 "-"
-                         negativeRules.push_back(rule.substr(1));
-                         logger.debug("  收集到否定规则: %s", rule.substr(1).c_str());
-                     }
-                 } else {
-                     positiveRules.push_back(rule);
-                     logger.debug("  收集到肯定规则: %s", rule.c_str());
+                 if (!rule.empty()) {
+                     finalRules.push_back(rule);
+                     logger.debug("  收集到规则: %s", rule.c_str());
                  }
             }
         }
-        // 注意：我们首先收集所有规则，然后处理肯定规则，然后处理否定规则。
-        // 这确保了更高优先级的否定会正确覆盖较低优先级的授予。
     } else {
         logger.debug("玩家 '%s' 不属于任何组。", playerUuid.c_str());
     }
 
-    // 5. 展开肯定规则并添加到 effectiveNodes
-    logger.debug("展开肯定规则...");
-    for (const auto& rule : positiveRules) {
-        if (rule.find('*') == string::npos) {
-            // 精确节点 - 如果已注册则添加（或允许未注册？）- 暂时假设必须注册。
-             if (allRegisteredNodesSet.count(rule)) {
-                effectiveNodes.insert(rule);
-                logger.debug("  从肯定规则添加了精确节点: %s", rule.c_str());
-             } else {
-                 logger.warn("  肯定规则 '%s' 引用了未注册的权限节点。忽略。", rule.c_str());
-             }
-        } else {
-            // 通配符规则 - 对照已注册节点展开
-            try {
-                std::regex patternRegex(wildcardToRegex(rule));
-                int addedCount = 0;
-                for (const auto& node : allRegisteredNodes) {
-                    if (std::regex_match(node, patternRegex)) {
-                        if (effectiveNodes.insert(node).second) { // Insert 返回 pair<iterator, bool>
-                           addedCount++;
-                        }
-                    }
-                }
-                 logger.debug("  展开了肯定通配符规则 '%s'，添加了 %d 个匹配的已注册节点。", rule.c_str(), addedCount);
-            } catch (const std::regex_error& e) {
-                logger.error("  来自肯定规则 '%s' 的无效正则表达式: %s。跳过。", rule.c_str(), e.what());
-            }
-        }
-    }
-
-    // 6. 应用否定规则从 effectiveNodes 中移除节点
-    logger.debug("应用否定规则...");
-    for (const auto& rule : negativeRules) {
-         if (rule.find('*') == string::npos) {
-             // 精确节点
-             if (effectiveNodes.erase(rule)) {
-                 logger.debug("  从否定规则移除了精确节点: %s", rule.c_str());
-             }
-         } else {
-             // 通配符规则
-             try {
-                 std::regex patternRegex(wildcardToRegex(rule));
-                 int removedCount = 0;
-                 for (auto it = effectiveNodes.begin(); it != effectiveNodes.end(); /* 此处不递增 */) {
-                     if (std::regex_match(*it, patternRegex)) {
-                         logger.debug("  由于否定通配符规则 '%s'，移除节点 '%s'", it->c_str(), rule.c_str());
-                         it = effectiveNodes.erase(it); // 删除并获取下一个迭代器
-                         removedCount++;
-                     } else {
-                         ++it; // 仅在未删除时递增
-                     }
-                 }
-                 if (removedCount > 0) {
-                    logger.debug("  应用了否定通配符规则 '%s'，移除了 %d 个节点。", rule.c_str(), removedCount);
-                 }
-             } catch (const std::regex_error& e) {
-                 logger.error("  来自否定规则 '%s' 的无效正则表达式: %s。跳过。", rule.c_str(), e.what());
-             }
-         }
-    }
-
-    // 7. 将最终集合转换为排序后的向量
-    vector<string> finalNodes(effectiveNodes.begin(), effectiveNodes.end());
-    sort(finalNodes.begin(), finalNodes.end());
-
-    // 8. 将结果存储到缓存
+    // 4. 将结果存储到缓存
     {
         std::unique_lock<std::shared_mutex> lock(playerPermissionsCacheMutex_);
-        playerPermissionsCache_[playerUuid] = finalNodes;
-        logger.debug("玩家 '%s' 的权限已缓存。", playerUuid.c_str());
+        playerPermissionsCache_[playerUuid] = finalRules;
+        logger.debug("玩家 '%s' 的权限规则已缓存，共 %zu 条规则。", playerUuid.c_str(), finalRules.size());
     }
 
-    logger.debug("为玩家 '%s' 计算的总有效权限节点数: %zu", playerUuid.c_str(), finalNodes.size());
-    return finalNodes;
+    return finalRules;
 }
 
 
@@ -1032,16 +1026,9 @@ bool PermissionManager::setGroupPriority(const string& groupName, int priority) 
     string sql = "UPDATE permission_groups SET priority = ? WHERE name = ?;";
     bool success = db_->executePrepared(sql, {to_string(priority), groupName});
     if (success) {
-        // 优先级变化，使该组及其所有子组的权限缓存失效
-        std::set<string> affectedGroups = getChildGroupsRecursive(groupName);
-        for (const string& affectedGroup : affectedGroups) {
-            invalidateGroupPermissionsCache(affectedGroup);
-        }
-        // 获取受影响的玩家
-        vector<string> affectedPlayers = getAffectedPlayersByGroup(groupName);
-        for (const string& playerUuid : affectedPlayers) {
-            invalidatePlayerPermissionsCache(playerUuid);
-        }
+        // 优先级变化，将 GROUP_MODIFIED 任务推入队列
+        enqueueTask({CacheInvalidationTaskType::GROUP_MODIFIED, groupName});
+        logger.debug("为组 '%s' 设置优先级 %d 成功，缓存失效任务已入队。", groupName.c_str(), priority);
     }
     return success;
 }
@@ -1067,8 +1054,9 @@ bool PermissionManager::hasPermission(const string& playerUuid, const string& pe
     // 获取玩家的所有有效权限（这将利用缓存）
     vector<string> playerEffectivePermissions = getAllPermissionsForPlayer(playerUuid);
 
-    // 遍历玩家的有效权限，检查是否有匹配的规则
-    for (const auto& rule : playerEffectivePermissions) {
+    // 遍历玩家的有效权限规则，倒序遍历，因为高优先级的规则后应用
+    for (auto it = playerEffectivePermissions.rbegin(); it != playerEffectivePermissions.rend(); ++it) {
+        const auto& rule = *it;
         bool isNegated = false;
         string permissionPattern = rule;
         if (!permissionPattern.empty() && permissionPattern[0] == '-') {
@@ -1077,7 +1065,6 @@ bool PermissionManager::hasPermission(const string& playerUuid, const string& pe
         }
 
         // 将通配符模式转换为正则表达式
-        // 注意：这里直接使用 wildcardToRegex 辅助函数，它现在是成员函数
         string regexPatternStr = wildcardToRegex(permissionPattern);
 
         try {
@@ -1096,7 +1083,7 @@ bool PermissionManager::hasPermission(const string& playerUuid, const string& pe
         }
     }
 
-    logger.debug("权限 '%s' 在玩家 '%s' 的有效权限中未明确匹配。", permissionNode.c_str(), playerUuid.c_str());
+    logger.debug("权限 '%s' 在玩家 '%s' 的有效规则中未明确匹配。", permissionNode.c_str(), playerUuid.c_str());
 
     // 如果没有有效权限规则匹配，则检查权限的默认值
     string defaultSql = "SELECT default_value FROM permissions WHERE name = ? LIMIT 1;";
@@ -1157,7 +1144,7 @@ bool PermissionManager::updateGroupDescription(const string& groupName, const st
     string sql = "UPDATE permission_groups SET description = ? WHERE id = ?;";
     bool success = db_->executePrepared(sql, {newDescription, gid});
     if (success) {
-        logger.info("成功更新组 '%s' (ID: %s) 的描述。", groupName.c_str(), gid.c_str());
+        logger.debug("成功更新组 '%s' (ID: %s) 的描述。", groupName.c_str(), gid.c_str());
     } else {
         logger.error("更新组 '%s' (ID: %s) 的描述失败。", groupName.c_str(), gid.c_str());
     }

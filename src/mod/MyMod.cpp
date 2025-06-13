@@ -38,12 +38,12 @@ if (config_.db_type == "sqlite") {
                                            config_.mysql_db,
                                            config_.mysql_port);
 } else if (config_.db_type == "postgresql") {
-   /* db_ = db::DatabaseFactory::createPostgreSQL(config_.postgresql_host,
+   db_ = db::DatabaseFactory::createPostgreSQL(config_.postgresql_host,
                                                 config_.postgresql_user,
                                                 config_.postgresql_password,
                                                 config_.postgresql_db,
                                                 config_.postgresql_port);
-                                                */
+                                                
 }
 
         getSelf().getLogger().info("Database '%s' initialized", config_.db_type.c_str());

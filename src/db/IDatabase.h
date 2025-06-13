@@ -36,7 +36,18 @@ public:
 
     /// @brief Close the database connection
     virtual void close() = 0;
+
+    // 新增：获取创建表的 SQL 语句
+    virtual std::string getCreateTableSql(const std::string& tableName, const std::string& columns) const = 0;
+    // 新增：获取添加列的 SQL 语句
+    virtual std::string getAddColumnSql(const std::string& tableName, const std::string& columnName, const std::string& columnDefinition) const = 0;
+    // 新增：获取创建索引的 SQL 语句
+    virtual std::string getCreateIndexSql(const std::string& indexName, const std::string& tableName, const std::string& columnName) const = 0;
+    // 新增：获取插入或忽略冲突的 SQL 语句 (用于 ON CONFLICT / INSERT IGNORE)
+    virtual std::string getInsertOrIgnoreSql(const std::string& tableName, const std::string& columns, const std::string& values, const std::string& conflictColumns) const = 0;
+    // 新增：获取自增主键的数据库方言定义
+    virtual std::string getAutoIncrementPrimaryKeyDefinition() const = 0;
 };
 
 } // namespace db
-} // namespace my_mod
+} // namespace BA

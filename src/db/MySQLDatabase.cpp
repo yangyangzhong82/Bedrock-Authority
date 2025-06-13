@@ -322,5 +322,33 @@ std::vector<std::vector<std::string>> MySQLDatabase::queryPrepared(const std::st
 }
 
 
+// 新增：获取创建表的 SQL 语句
+std::string MySQLDatabase::getCreateTableSql(const std::string& tableName, const std::string& columns) const {
+    return "CREATE TABLE IF NOT EXISTS " + tableName + " (" + columns + ");";
+}
+
+// 新增：获取添加列的 SQL 语句
+std::string MySQLDatabase::getAddColumnSql(const std::string& tableName, const std::string& columnName, const std::string& columnDefinition) const {
+    return "ALTER TABLE " + tableName + " ADD COLUMN " + columnName + " " + columnDefinition + ";";
+}
+
+// 新增：获取创建索引的 SQL 语句
+std::string MySQLDatabase::getCreateIndexSql(const std::string& indexName, const std::string& tableName, const std::string& columnName) const {
+    // MySQL does not support IF NOT EXISTS for CREATE INDEX directly.
+    // The MySQLDatabase::execute method is expected to handle the duplicate key error (1061) as a warning.
+    return "CREATE INDEX " + indexName + " ON " + tableName + " (" + columnName + ");";
+}
+
+// 新增：获取插入或忽略冲突的 SQL 语句 (用于 INSERT IGNORE)
+std::string MySQLDatabase::getInsertOrIgnoreSql(const std::string& tableName, const std::string& columns, const std::string& values, const std::string& conflictColumns) const {
+    // MySQL uses INSERT IGNORE
+    return "INSERT IGNORE INTO " + tableName + " (" + columns + ") VALUES (" + values + ");";
+}
+
+// 新增：获取自增主键的数据库方言定义
+std::string MySQLDatabase::getAutoIncrementPrimaryKeyDefinition() const {
+    return "INT AUTO_INCREMENT PRIMARY KEY";
+}
+
 } // namespace db
 } // namespace BA
