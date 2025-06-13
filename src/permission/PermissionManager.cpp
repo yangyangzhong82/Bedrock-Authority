@@ -118,20 +118,27 @@ std::string sql = "SELECT id FROM " + table + " WHERE name = ? LIMIT 1;";
 
 void PermissionManager::populateGroupCache() {
     auto& logger = ll::mod::NativeMod::current()->getLogger();
-    logger.info("正在填充权限组缓存...");
-    std::string sql = "SELECT id, name FROM permission_groups;";
-    auto rows = db_->queryPrepared(sql, {}); // 获取所有组的 ID 和名称
+    try {
+        logger.info("正在填充权限组缓存...");
+        std::string sql = "SELECT id, name FROM permission_groups;";
+        auto rows = db_->queryPrepared(sql, {}); // 获取所有组的 ID 和名称
 
-    std::unique_lock lock(cacheMutex_); // 获取独占锁以写入缓存
-    groupNameCache_.clear(); // 清除旧缓存
-    groupNameCache_.reserve(rows.size()); // 预分配空间
+        std::unique_lock lock(cacheMutex_); // 获取独占锁以写入缓存
+        groupNameCache_.clear(); // 清除旧缓存
+        groupNameCache_.reserve(rows.size()); // 预分配空间
 
-    for (const auto& row : rows) {
-        if (row.size() >= 2 && !row[0].empty() && !row[1].empty()) {
-            groupNameCache_[row[1]] = row[0]; // 缓存 name -> id
+        for (const auto& row : rows) {
+            if (row.size() >= 2 && !row[0].empty() && !row[1].empty()) {
+                groupNameCache_[row[1]] = row[0]; // 缓存 name -> id
+            }
         }
+        logger.info("权限组缓存已填充，共 %zu 个条目。", groupNameCache_.size());
+    } catch (const std::exception& e) {
+        logger.error("填充权限组缓存时异常: %s", e.what());
+        // 关键：如果sqlite文件损坏/路径错误/被锁，直接跳过，避免阻塞
+        std::unique_lock lock(cacheMutex_);
+        groupNameCache_.clear();
     }
-    logger.info("权限组缓存已填充，共 %zu 个条目。", groupNameCache_.size());
 }
 
 std::string PermissionManager::getCachedGroupId(const std::string& groupName) {
@@ -271,9 +278,18 @@ bool PermissionManager::groupExists(const std::string& groupName) {
 
 std::vector<std::string> PermissionManager::getAllGroups() {
     std::vector<std::string> list;
-    std::string sql = "SELECT name FROM permission_groups;";
-    auto rows = db_->queryPrepared(sql, {}); // 空参数
-    for (auto& row : rows) if (!row.empty()) list.push_back(row[0]);
+    try {
+        ll::mod::NativeMod::current()->getLogger().info("准备查询所有权限组...");
+        std::string sql  = "SELECT name FROM permission_groups;";
+        auto        rows = db_->queryPrepared(sql, {}); // 空参数
+        for (auto& row : rows)
+            if (!row.empty()) list.push_back(row[0]);
+        ll::mod::NativeMod::current()->getLogger().info("查询权限组完成，数量: %zu", list.size());
+    } catch (const std::exception& e) {
+        ll::mod::NativeMod::current()->getLogger().error("查询权限组时异常: %s", e.what());
+        // 关键：如果sqlite文件损坏/路径错误/被锁，直接返回空列表，避免阻塞
+        return {};
+    }
     return list;
 }
 
@@ -323,7 +339,7 @@ bool PermissionManager::addPermissionToGroup(const std::string& groupName, const
     }
 
 
-    logger.info("向组 '%s' (GID: %s) 添加权限规则 '%s'",
+    logger.debug("向组 '%s' (GID: %s) 添加权限规则 '%s'",
                 permissionRule.c_str(), groupName.c_str(), gid.c_str());
 
     // MySQL 使用 INSERT IGNORE, SQLite 使用 INSERT OR IGNORE, PostgreSQL 使用 ON CONFLICT
@@ -709,7 +725,7 @@ std::vector<std::string> PermissionManager::getAllPermissionsForPlayer(const std
 
 bool PermissionManager::setGroupPriority(const std::string& groupName, int priority) {
     auto& logger = ll::mod::NativeMod::current()->getLogger();
-    logger.info("为组 '%s' 设置优先级 %d", priority, groupName.c_str());
+    logger.debug("为组 '%s' 设置优先级 %d", priority, groupName.c_str());
     // 使用预处理语句检查存在性以保持一致性，尽管在 UPDATE 之前并非严格必要
     if (!groupExists(groupName)) {
          logger.warn("SetGroupPriority: 组 '%s' 未找到。", groupName.c_str());

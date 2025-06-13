@@ -5,17 +5,19 @@ add_repositories("liteldev-repo https://github.com/LiteLDev/xmake-repo.git")
 -- add_requires("levilamina develop") to use develop version
 -- please note that you should add bdslibrary yourself if using dev version
 if is_config("target_type", "server") then
-    add_requires("levilamina 1.1.2", {configs = {target_type = "server"}})
+    add_requires("levilamina 1.2.1", {configs = {target_type = "server"}})
 else
     add_requires("levilamina", {configs = {target_type = "client"}})
 end
 
 add_requires("levibuildscript")
 add_requires("sqlite3")
-add_requires("mysql")
+add_requires("mariadb-connector-c")
+add_requires("drogon")
+add_requires("nlohmann_json")
 add_requires("legacyremotecall")
 add_requires("postgresql")
-
+add_requires("mysql")
 if not has_config("vs_runtime") then
     set_runtimes("MD")
 end
@@ -32,7 +34,7 @@ target("Bedrock-Authority") -- Change this to your mod name.
     add_cxflags( "/EHa", "/utf-8", "/W4", "/w44265", "/w44289", "/w44296", "/w45263", "/w44738", "/w45204")
     -- Add BA_EXPORTS to enable dllexport/dllimport macros
     add_defines("NOMINMAX", "UNICODE", "BA_EXPORTS")
-    add_packages("levilamina","sqlite3","mysql" ,"legacyremotecall","postgresql")
+    add_packages("levilamina","sqlite3","mysql" ,"legacyremotecall","postgresql","drogon","nlohmann_json")
     set_exceptions("none") -- To avoid conflicts with /EHa.
     set_kind("shared")
     set_languages("c++20")
@@ -40,6 +42,7 @@ target("Bedrock-Authority") -- Change this to your mod name.
     add_headerfiles("src/**.h")
     add_files("src/**.cpp")
     add_includedirs("src")
+    -- add_includedirs(package.includedirs("mariadb-connector-c"))
     -- if is_config("target_type", "server") then
     --     add_includedirs("src-server")
     --     add_files("src-server/**.cpp")
@@ -53,6 +56,6 @@ target("Bedrock-Authority") -- Change this to your mod name.
         local libdir = path.join(bindir, "lib")
         os.mkdir(includedir)
         os.mkdir(libdir)
-        os.cp(path.join(os.projectdir(), "src", "permission", "**.h"), includedir) -- 只复制czmoney子目录下的头文件
+        os.cp(path.join(os.projectdir(), "src", "permission", "**.h"), includedir)
         os.cp(path.join(target:targetdir(), target:name() .. ".lib"), libdir)
         end)

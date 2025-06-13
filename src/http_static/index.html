@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>权限组管理</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        #debugInfo {
+            margin-top: 20px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            background-color: #f5f5f5;
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: monospace;
+            white-space: pre-wrap;
+            display: none;
+        }
+        .debug-show {
+            display: block !important;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>权限组管理</h1>
+
+        <div class="section">
+            <h2>创建新权限组</h2>
+            <input type="text" id="newGroupName" placeholder="组名称">
+            <input type="text" id="newGroupDescription" placeholder="描述 (可选)">
+            <button id="createGroupBtn">创建组</button>
+            <button id="toggleDebugBtn" style="background-color: #888; float: right;">显示调试信息</button>
+        </div>
+
+        <div id="debugInfo">调试信息将显示在这里...</div>
+
+        <div class="section">
+            <h2>现有权限组</h2>
+            <ul id="groupList">
+                <!-- 权限组将在这里动态加载 -->
+            </ul>
+        </div>
+
+        <div class="section">
+            <h2>组详情与操作</h2>
+            <div id="groupDetails" style="display: none;">
+                <h3>组名: <span id="detailGroupName"></span></h3>
+                <p>ID: <span id="detailGroupId"></span></p>
+                <p>描述: <span id="detailGroupDescription"></span></p>
+                <p>优先级: <span id="detailGroupPriority"></span></p>
+
+                <div class="group-actions">
+                    <h4>更新描述</h4>
+                    <input type="text" id="updateDescriptionInput" placeholder="新描述">
+                    <button id="updateDescriptionBtn">更新</button>
+
+                    <h4>设置优先级</h4>
+                    <input type="number" id="updatePriorityInput" placeholder="新优先级">
+                    <button id="updatePriorityBtn">设置</button>
+
+                    <h4>管理权限</h4>
+                    <input type="text" id="addPermissionInput" placeholder="添加权限 (例如: mymod.command.use)">
+                    <button id="addPermissionBtn">添加权限</button>
+                    <input type="text" id="removePermissionInput" placeholder="移除权限 (例如: -mymod.command.use)">
+                    <button id="removePermissionBtn">移除权限</button>
+                    <p>直接权限:</p>
+                    <ul id="directPermissionsList"></ul>
+                    <p>生效权限 (含继承):</p>
+                    <ul id="effectivePermissionsList"></ul>
+
+                    <h4>管理继承</h4>
+                    <input type="text" id="addParentInput" placeholder="添加父组名称">
+                    <button id="addParentBtn">添加父组</button>
+                    <input type="text" id="removeParentInput" placeholder="移除父组名称">
+                    <button id="removeParentBtn">移除父组</button>
+                    <p>父组:</p>
+                    <ul id="parentGroupsList"></ul>
+
+                    <h4>管理玩家</h4>
+                    <input type="text" id="addPlayerInput" placeholder="添加玩家UUID">
+                    <button id="addPlayerBtn">添加玩家</button>
+                    <input type="text" id="removePlayerInput" placeholder="移除玩家UUID">
+                    <button id="removePlayerBtn">移除玩家</button>
+                    <p>组内玩家:</p>
+                    <ul id="playersInGroupList"></ul>
+
+                    <button id="deleteGroupBtn" class="delete-btn">删除此组</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

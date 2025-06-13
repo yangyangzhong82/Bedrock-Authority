@@ -4,6 +4,7 @@
 #include <memory>
 #include "config/Config.h"
 #include "db/IDatabase.h"
+#include "http/HttpServer.h" // Include HttpServer header
 
 namespace BA {
 
@@ -33,6 +34,7 @@ private:
     ll::mod::NativeMod& mSelf;
     BA::config::Config config_;
     std::unique_ptr<db::IDatabase> db_;
+    std::unique_ptr<http::HttpServer> httpServer_; // Add HttpServer member
 };
 
 } // namespace my_mod
