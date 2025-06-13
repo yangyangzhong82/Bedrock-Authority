@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map> // For cache
+#include <map>           // For std::map in playerPermissionsCache_
 #include <shared_mutex>  // For thread-safe cache access
 #include <set>           // For internal use in getAllPermissionsForPlayer
 #include <thread>        // For worker thread
@@ -115,7 +116,7 @@ public:
     std::vector<std::string> getPlayersInGroup(const std::string& groupName);
     /// 获取玩家最终生效的所有权限规则（考虑优先级、继承和否定），这些规则是未展开的原始规则。
     /// 实际的权限解析（通配符匹配）发生在 hasPermission 函数中。
-    std::vector<std::string> getAllPermissionsForPlayer(const std::string& playerUuid);
+    std::map<std::string, bool> getAllPermissionsForPlayer(const std::string& playerUuid);
 
     /// 设置权限组的优先级（优先级越高越优先）
     bool setGroupPriority(const std::string& groupName, int priority);
@@ -135,10 +136,16 @@ public:
 
 private:
     PermissionManager() = default;
+    // 禁用拷贝构造函数和拷贝赋值运算符，确保单例模式
+    PermissionManager(const PermissionManager&) = delete;
+    PermissionManager& operator=(const PermissionManager&) = delete;
+
     void ensureTables(); // 确保表存在
 
     // 辅助函数：根据名称从权限表或组表中获取 ID
     std::string getIdByName(const std::string& table, const std::string& name);
+    // 辅助函数：从数据库获取组 ID (无锁版本)
+    std::string _getGroupIdFromDb(const std::string& groupName);
 
     // 辅助函数：将通配符模式转换为正则表达式字符串
     std::string wildcardToRegex(const std::string& pattern);
@@ -177,7 +184,7 @@ private:
     mutable std::shared_mutex cacheMutex_; // mutable 允许在 const 方法中锁定
 
     // 玩家权限缓存
-    std::unordered_map<std::string, std::vector<std::string>> playerPermissionsCache_;
+    std::unordered_map<std::string, std::map<std::string, bool>> playerPermissionsCache_;
     // 用于保护玩家权限缓存的读写锁
     mutable std::shared_mutex playerPermissionsCacheMutex_;
 

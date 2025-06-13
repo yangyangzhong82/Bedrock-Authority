@@ -188,5 +188,17 @@ std::string SQLiteDatabase::getAutoIncrementPrimaryKeyDefinition() const {
     return "INTEGER PRIMARY KEY AUTOINCREMENT";
 }
 
+bool SQLiteDatabase::beginTransaction() {
+    return execute("BEGIN TRANSACTION;");
+}
+
+bool SQLiteDatabase::commit() {
+    return execute("COMMIT;");
+}
+
+bool SQLiteDatabase::rollback() {
+    return execute("ROLLBACK;");
+}
+
 } // namespace db
 } // namespace BA

@@ -202,8 +202,22 @@ string PermissionManager::getIdByName(const string& table, const string& name) {
         ::ll::mod::NativeMod::current()->getLogger().error("在 getIdByName 中数据库未初始化，表 '%s'，名称 '%s'", table.c_str(), name.c_str());
         return "";
     }
-string sql = "SELECT id FROM " + table + " WHERE name = ? LIMIT 1;";
+    string sql = "SELECT id FROM " + table + " WHERE name = ? LIMIT 1;";
     auto rows = db_->queryPrepared(sql, {name});
+    if (rows.empty() || rows[0].empty()) {
+        return "";
+    }
+    return rows[0][0];
+}
+
+// 新增辅助函数：从数据库获取组 ID (无锁版本)
+string PermissionManager::_getGroupIdFromDb(const string& groupName) {
+    if (!db_) {
+        ::ll::mod::NativeMod::current()->getLogger().error("在 _getGroupIdFromDb 中数据库未初始化，组名 '%s'", groupName.c_str());
+        return "";
+    }
+    string sql = "SELECT id FROM permission_groups WHERE name = ? LIMIT 1;";
+    auto rows = db_->queryPrepared(sql, {groupName});
     if (rows.empty() || rows[0].empty()) {
         return "";
     }
@@ -258,8 +272,8 @@ string PermissionManager::getCachedGroupId(const string& groupName) {
         return it->second; // 另一个线程刚刚填充了缓存
     }
 
-    // 4. 缓存中确实没有，查询数据库
-    string groupId = getIdByName("permission_groups", groupName); // 使用原始 DB 查询
+    // 4. 缓存中确实没有，查询数据库，使用无锁的 _getGroupIdFromDb
+    string groupId = _getGroupIdFromDb(groupName);
 
     // 5. 如果在数据库中找到，则更新缓存
     if (!groupId.empty()) {
@@ -313,7 +327,7 @@ void PermissionManager::populateGroupPermissionsCache() {
                     visited.insert(currentGroupName);
 
                     // 获取当前组的直接权限规则
-                    string gid = getCachedGroupId(currentGroupName); // 使用缓存获取组 ID
+                    string gid = _getGroupIdFromDb(currentGroupName); // 直接从数据库获取组 ID (无锁)
                     if (!gid.empty()) {
                         string directRulesSql = "SELECT permission_rule FROM group_permissions WHERE group_id = ?;";
                         auto directRows = db_->queryPrepared(directRulesSql, {gid});
@@ -520,16 +534,31 @@ bool PermissionManager::deleteGroup(const string& groupName) {
 
     // group_permissions, group_inheritance, player_groups 中的外键上的 ON DELETE CASCADE
     // 应该在删除组时自动处理相关删除。
+
+    // 开始事务
+    if (!db_->beginTransaction()) {
+        logger.error("删除组 '%s' 时无法开始事务。", groupName.c_str());
+        return false;
+    }
+
     string sql = "DELETE FROM permission_groups WHERE id = ?;";
     bool success = db_->executePrepared(sql, {gid});
 
     if (success) {
-        invalidateGroupCache(groupName); // 如果删除成功，则使组名缓存失效
-        // 将 GROUP_MODIFIED 任务推入队列，由工作线程处理后续的子组和玩家失效
-        enqueueTask({CacheInvalidationTaskType::GROUP_MODIFIED, groupName});
-        logger.debug("删除组 '%s' (ID: %s) 成功，相关缓存失效任务已入队。", groupName.c_str(), gid.c_str());
+        // 提交事务
+        if (db_->commit()) {
+            invalidateGroupCache(groupName); // 如果删除成功，则使组名缓存失效
+            // 将 GROUP_MODIFIED 任务推入队列，由工作线程处理后续的子组和玩家失效
+            enqueueTask({CacheInvalidationTaskType::GROUP_MODIFIED, groupName});
+            logger.debug("删除组 '%s' (ID: %s) 成功，相关缓存失效任务已入队。", groupName.c_str(), gid.c_str());
+        } else {
+            logger.error("删除组 '%s' (ID: %s) 时提交事务失败，正在回滚。", groupName.c_str(), gid.c_str());
+            db_->rollback(); // 提交失败则回滚
+            success = false;
+        }
     } else {
-        logger.debug("删除组 '%s' (ID: %s) 失败。", groupName.c_str(), gid.c_str());
+        logger.debug("删除组 '%s' (ID: %s) 失败，正在回滚。", groupName.c_str(), gid.c_str());
+        db_->rollback(); // 删除失败则回滚
         // logger.error("数据库错误详情: %s", db_->getLastError().c_str());
     }
     return success;
@@ -705,7 +734,7 @@ vector<string> PermissionManager::getPermissionsOfGroup(const string& groupName)
         visited.insert(currentGroupName);
 
         // 获取当前组的直接权限规则
-        string gid = getCachedGroupId(currentGroupName); // 使用缓存获取组 ID
+        string gid = _getGroupIdFromDb(currentGroupName); // 直接从数据库获取组 ID (无锁)
         if (!gid.empty()) {
             string directRulesSql = "SELECT permission_rule FROM group_permissions WHERE group_id = ?;";
             auto directRows = db_->queryPrepared(directRulesSql, {gid});
@@ -846,7 +875,7 @@ vector<string> PermissionManager::getPlayerGroupIds(const string& playerUuid) {
 
 vector<string> PermissionManager::getPlayersInGroup(const string& groupName) {
     vector<string> list;
-    string gid = getCachedGroupId(groupName); // 使用缓存
+    string gid = _getGroupIdFromDb(groupName); // 直接从数据库获取组 ID (无锁)
     if (gid.empty()) {
         // 组不存在 (来自缓存或数据库)，返回空列表
         return list;
@@ -945,7 +974,7 @@ vector<string> PermissionManager::getAffectedPlayersByGroup(const string& groupN
 }
 
 
-std::vector<std::string> PermissionManager::getAllPermissionsForPlayer(const std::string& playerUuid) {
+std::map<std::string, bool> PermissionManager::getAllPermissionsForPlayer(const std::string& playerUuid) {
     auto& logger = ::ll::mod::NativeMod::current()->getLogger();
     logger.debug("为玩家 '%s' 计算所有有效权限节点", playerUuid.c_str());
 
@@ -960,14 +989,14 @@ std::vector<std::string> PermissionManager::getAllPermissionsForPlayer(const std
     } // 共享锁在此处释放
 
     // 2. 缓存未命中，需要计算并写入缓存
-    vector<string> finalRules; // 存储最终的规则列表
+    std::map<std::string, bool> effectivePermissions; // 存储最终解析后的权限状态
 
     // 1. 收集默认权限规则
     string defaultPermsSql = "SELECT name FROM permissions WHERE default_value = 1;";
     auto defaultRows = db_->queryPrepared(defaultPermsSql, {});
     for (const auto& row : defaultRows) {
         if (!row.empty()) {
-            finalRules.push_back(row[0]);
+            effectivePermissions[row[0]] = true; // 默认权限为授予
             logger.debug("玩家 '%s' 初始拥有默认规则: %s", playerUuid.c_str(), row[0].c_str());
         }
     }
@@ -988,15 +1017,26 @@ std::vector<std::string> PermissionManager::getAllPermissionsForPlayer(const std
         logger.debug("玩家 '%s' 的组按优先级排序 (从低到高):", playerUuid.c_str());
         for(const auto& gi : playerGroupInfos) { logger.debug("- 组: %s, 优先级: %d", gi.name.c_str(), gi.priority); }
 
-        // 3. 按优先级顺序收集所有组的规则
+        // 3. 按优先级顺序收集所有组的规则并进行解析
         for (const auto& groupInfo : playerGroupInfos) {
             // getPermissionsOfGroup 返回此组的已解析规则（包括继承的），并利用了组权限缓存
+            // 这些规则已经是 "压平" 后的，例如 "perm.a" 或 "-perm.b"
             auto groupRules = getPermissionsOfGroup(groupInfo.name);
-            logger.debug("从组 '%s' (优先级 %d) 收集规则: %zu 条规则", groupInfo.name.c_str(), groupInfo.priority, groupRules.size());
+            logger.debug("从组 '%s' (优先级 %d) 收集并解析规则: %zu 条规则", groupInfo.name.c_str(), groupInfo.priority, groupRules.size());
             for (const auto& rule : groupRules) {
-                 if (!rule.empty()) {
-                     finalRules.push_back(rule);
-                     logger.debug("  收集到规则: %s", rule.c_str());
+                 if (rule.empty()) continue;
+
+                 bool isNegatedRule = (rule[0] == '-');
+                 string baseName = isNegatedRule ? rule.substr(1) : rule;
+
+                 if (baseName.empty()) continue;
+
+                 if (isNegatedRule) {
+                     effectivePermissions[baseName] = false; // 否定规则覆盖
+                     logger.debug("  解析规则 '%s': 将 '%s' 的状态设置为否定。", rule.c_str(), baseName.c_str());
+                 } else {
+                     effectivePermissions[baseName] = true; // 肯定规则覆盖
+                     logger.debug("  解析规则 '%s': 将 '%s' 的状态设置为授予。", rule.c_str(), baseName.c_str());
                  }
             }
         }
@@ -1007,11 +1047,11 @@ std::vector<std::string> PermissionManager::getAllPermissionsForPlayer(const std
     // 4. 将结果存储到缓存
     {
         std::unique_lock<std::shared_mutex> lock(playerPermissionsCacheMutex_);
-        playerPermissionsCache_[playerUuid] = finalRules;
-        logger.debug("玩家 '%s' 的权限规则已缓存，共 %zu 条规则。", playerUuid.c_str(), finalRules.size());
+        playerPermissionsCache_[playerUuid] = effectivePermissions;
+        logger.debug("玩家 '%s' 的权限已缓存，共 %zu 条有效权限。", playerUuid.c_str(), effectivePermissions.size());
     }
 
-    return finalRules;
+    return effectivePermissions;
 }
 
 
@@ -1051,61 +1091,113 @@ bool PermissionManager::hasPermission(const string& playerUuid, const string& pe
     auto& logger = ::ll::mod::NativeMod::current()->getLogger();
     logger.debug("检查玩家 '%s' 的权限 '%s'", playerUuid.c_str(), permissionNode.c_str());
 
-    // 获取玩家的所有有效权限（这将利用缓存）
-    vector<string> playerEffectivePermissions = getAllPermissionsForPlayer(playerUuid);
+    // 获取玩家的所有有效权限（这将利用缓存，返回已解析的 map）
+    std::map<std::string, bool> playerEffectivePermissions = getAllPermissionsForPlayer(playerUuid);
 
-    // 遍历玩家的有效权限规则，倒序遍历，因为高优先级的规则后应用
-    for (auto it = playerEffectivePermissions.rbegin(); it != playerEffectivePermissions.rend(); ++it) {
-        const auto& rule = *it;
-        bool isNegated = false;
-        string permissionPattern = rule;
-        if (!permissionPattern.empty() && permissionPattern[0] == '-') {
-            isNegated = true;
-            permissionPattern = permissionPattern.substr(1);
+    // 1. 首先检查精确匹配
+    auto itExact = playerEffectivePermissions.find(permissionNode);
+    if (itExact != playerEffectivePermissions.end()) {
+        logger.debug("权限 '%s' 被玩家 '%s' 的精确规则 %s。",
+                     permissionNode.c_str(),
+                     playerUuid.c_str(),
+                     itExact->second ? "授予" : "拒绝");
+        return itExact->second; // 找到精确匹配，直接返回其状态
+    }
+
+    // 2. 如果没有精确匹配，则进行通配符匹配
+    // 遍历 map 中的所有权限规则，寻找通配符匹配
+    // 注意：map 是有序的，但通配符匹配的优先级需要根据规则的特异性来决定。
+    // 考虑到 getAllPermissionsForPlayer 已经处理了优先级并压平了规则，
+    // 这里的遍历顺序不直接决定优先级，而是检查是否存在匹配的规则。
+    // 权限系统通常是“最具体规则优先”，但这里我们简化为“找到即返回”。
+    // 如果存在多个通配符规则匹配，且有肯定有否定，则需要更复杂的逻辑。
+    // 按照当前设计，getAllPermissionsForPlayer 已经将所有规则压平，
+    // 所以这里只需要找到第一个匹配的通配符规则即可。
+    // 更好的做法是，通配符匹配也应该从最具体的规则开始匹配。
+    // 但由于 map 的键是按字典序排序的，我们不能直接依赖迭代顺序来判断优先级。
+    // 因此，我们仍然需要遍历所有规则，并根据找到的规则来决定最终状态。
+    // 为了保持与旧逻辑的“倒序遍历”以处理优先级（尽管现在优先级已在 getAllPermissionsForPlayer 中处理），
+    // 我们需要确保通配符匹配的逻辑是正确的。
+    // 实际上，如果 getAllPermissionsForPlayer 已经返回了最终的有效权限，
+    // 那么 hasPermission 只需要检查这个 map。
+    // 如果 map 中没有精确匹配，那么通配符匹配也应该基于这个 map 中的键。
+
+    // 重新考虑通配符匹配的逻辑：
+    // 玩家的有效权限 map 已经包含了所有经过优先级处理后的最终权限状态。
+    // 如果 `permissionNode` 没有精确匹配，我们需要检查 `playerEffectivePermissions` 中是否存在通配符规则能够匹配 `permissionNode`。
+    // 并且，我们需要找到最具体的匹配。
+    // 这是一个复杂的问题，因为 `std::map` 不支持高效的通配符查找。
+    // 原始的 `hasPermission` 是通过遍历 `vector<string>` 并对每个规则进行 `regex_match` 来实现的。
+    // 优化后，`playerEffectivePermissions` 是一个 `map<string, bool>`，键是已经解析好的权限节点（不含负号）。
+    // 所以，我们需要遍历 `map` 的键，将它们转换为正则表达式，然后与 `permissionNode` 进行匹配。
+
+    // 默认值：如果没有任何规则匹配，则使用权限的默认值。
+    bool finalPermissionState = false; // 默认拒绝
+
+    // 检查权限的默认值
+    string defaultSql = "SELECT default_value FROM permissions WHERE name = ? LIMIT 1;";
+    auto rows = db_->queryPrepared(defaultSql, {permissionNode});
+    if (!rows.empty() && !rows[0].empty()) {
+        try {
+            finalPermissionState = stoi(rows[0][0]) != 0;
+            logger.debug("权限 '%s' 初始默认值: %s", permissionNode.c_str(), finalPermissionState ? "true" : "false");
+        } catch (const invalid_argument& ia) {
+             logger.error("权限 '%s' 的 default_value 无效: %s", permissionNode.c_str(), rows[0][0].c_str());
+        } catch (const out_of_range& oor) {
+             logger.error("权限 '%s' 的 Default_value 超出范围: %s", permissionNode.c_str(), rows[0][0].c_str());
         }
+    } else {
+         logger.debug("在 permissions 表中未找到权限节点 '%s'，使用默认拒绝。", permissionNode.c_str());
+    }
 
-        // 将通配符模式转换为正则表达式
-        string regexPatternStr = wildcardToRegex(permissionPattern);
+    // 遍历缓存的有效权限，进行通配符匹配
+    // 这里的逻辑需要确保“最具体规则优先”的原则。
+    // 由于 map 是按键排序的，我们不能直接依赖迭代顺序。
+    // 更好的方法是，在 getAllPermissionsForPlayer 中，将通配符规则也解析成某种可快速匹配的结构，
+    // 或者在 hasPermission 中，对所有匹配的通配符规则进行优先级判断。
+    // 考虑到当前 getAllPermissionsForPlayer 已经将规则压平，
+    // 这里的 map 键是 "perm.a" 或 "perm.*" 这样的形式。
+    // 我们需要找到所有能匹配 `permissionNode` 的键，然后根据它们的 `bool` 值来决定。
+    // 这是一个“最具体匹配优先”的问题。
+    // 简单的实现是：找到所有匹配的规则，然后根据规则的长度（更长更具体）来决定。
+
+    // 存储所有匹配的规则及其状态
+    std::map<int, bool> matchingRulesBySpecificity; // 长度 -> 状态 (true/false)
+
+    for (const auto& pair : playerEffectivePermissions) {
+        const string& cachedPermissionPattern = pair.first; // 例如 "my.perm" 或 "my.*"
+        bool cachedState = pair.second; // true (授予) 或 false (否定)
+
+        // 将缓存的权限模式转换为正则表达式
+        string regexPatternStr = wildcardToRegex(cachedPermissionPattern);
 
         try {
             std::regex permissionRegex(regexPatternStr);
             if (std::regex_match(permissionNode, permissionRegex)) {
-                logger.debug("权限 '%s' 被玩家 '%s' 的规则 '%s' %s",
+                // 匹配成功，记录规则的长度和状态
+                // 规则越长，通常认为越具体
+                matchingRulesBySpecificity[cachedPermissionPattern.length()] = cachedState;
+                logger.debug("通配符匹配：权限 '%s' 匹配规则 '%s' (%s)。",
                              permissionNode.c_str(),
-                             playerUuid.c_str(),
-                             rule.c_str(),
-                             isNegated ? "拒绝" : "授予");
-                return !isNegated; // 找到明确规则，立即返回
+                             cachedPermissionPattern.c_str(),
+                             cachedState ? "授予" : "拒绝");
             }
         } catch (const std::regex_error& e) {
-             logger.error("从规则 '%s' 生成的无效正则表达式模式: %s", rule.c_str(), e.what());
+             logger.error("从缓存规则 '%s' 生成的无效正则表达式模式: %s", cachedPermissionPattern.c_str(), e.what());
              // 跳过此无效规则
         }
     }
 
-    logger.debug("权限 '%s' 在玩家 '%s' 的有效规则中未明确匹配。", permissionNode.c_str(), playerUuid.c_str());
-
-    // 如果没有有效权限规则匹配，则检查权限的默认值
-    string defaultSql = "SELECT default_value FROM permissions WHERE name = ? LIMIT 1;";
-    auto rows = db_->queryPrepared(defaultSql, {permissionNode});
-
-    if (!rows.empty() && !rows[0].empty()) {
-        try {
-            bool defaultValue = stoi(rows[0][0]) != 0;
-            logger.debug("权限 '%s' 使用默认值: %s", permissionNode.c_str(), defaultValue ? "true" : "false");
-            return defaultValue;
-        } catch (const invalid_argument& ia) {
-             ::ll::mod::NativeMod::current()->getLogger().error("权限 '%s' 的 default_value 无效: %s", permissionNode.c_str(), rows[0][0].c_str());
-        } catch (const out_of_range& oor) {
-             ::ll::mod::NativeMod::current()->getLogger().error("权限 '%s' 的 Default_value 超出范围: %s", permissionNode.c_str(), rows[0][0].c_str());
-        }
-    } else {
-         logger.debug("在 permissions 表中未找到权限节点 '%s'。", permissionNode.c_str());
+    // 如果有匹配的通配符规则，则取最具体的（长度最长）规则的状态
+    if (!matchingRulesBySpecificity.empty()) {
+        // map 会自动按键（长度）排序，所以最后一个元素就是最长的规则
+        finalPermissionState = matchingRulesBySpecificity.rbegin()->second;
+        logger.debug("权限 '%s' 通过最具体通配符规则决定为: %s",
+                     permissionNode.c_str(),
+                     finalPermissionState ? "授予" : "拒绝");
     }
 
-    // 如果权限节点不存在或默认值无效/缺失，则默认拒绝
-    logger.debug("权限 '%s' 被拒绝 (未找到或无适用规则/默认值)。", permissionNode.c_str());
-    return false;
+    return finalPermissionState;
 }
 
 GroupDetails PermissionManager::getGroupDetails(const string& groupName) {

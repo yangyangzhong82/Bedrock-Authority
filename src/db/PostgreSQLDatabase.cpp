@@ -232,5 +232,17 @@ string PostgreSQLDatabase::getAutoIncrementPrimaryKeyDefinition() const {
     return "SERIAL PRIMARY KEY";
 }
 
+bool PostgreSQLDatabase::beginTransaction() {
+    return execute("BEGIN;");
+}
+
+bool PostgreSQLDatabase::commit() {
+    return execute("COMMIT;");
+}
+
+bool PostgreSQLDatabase::rollback() {
+    return execute("ROLLBACK;");
+}
+
 } // namespace db
 } // namespace BA

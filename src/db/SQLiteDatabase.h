@@ -32,6 +32,11 @@ public:
     // 新增：获取自增主键的数据库方言定义
     std::string getAutoIncrementPrimaryKeyDefinition() const override;
 
+    // IDatabase 事务接口实现
+    bool beginTransaction() override;
+    bool commit() override;
+    bool rollback() override;
+
 private:
     sqlite3* db_;
 };

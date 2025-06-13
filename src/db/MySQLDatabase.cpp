@@ -350,5 +350,17 @@ std::string MySQLDatabase::getAutoIncrementPrimaryKeyDefinition() const {
     return "INT AUTO_INCREMENT PRIMARY KEY";
 }
 
+bool MySQLDatabase::beginTransaction() {
+    return execute("START TRANSACTION;");
+}
+
+bool MySQLDatabase::commit() {
+    return execute("COMMIT;");
+}
+
+bool MySQLDatabase::rollback() {
+    return execute("ROLLBACK;");
+}
+
 } // namespace db
 } // namespace BA
