@@ -32,10 +32,24 @@ bool SQLiteDatabase::execute(const std::string& sql) {
     char* errMsg = nullptr;
     int rc = sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, &errMsg);
     if (rc != SQLITE_OK) {
-        string err(errMsg);
-        sqlite3_free(errMsg);
-        logger.error("SQLite 执行错误: %s", err.c_str());
-        return false;
+        string err_msg(errMsg ? errMsg : "未知错误");
+        if (errMsg) {
+            sqlite3_free(errMsg);
+        }
+
+        // 检查可忽略的 SQLite 错误
+        // 例如，在 ALTER TABLE ... ADD COLUMN 时如果列已存在，会返回 SQLITE_ERROR，错误信息包含 "duplicate column name"
+        // 另一个常见的可忽略错误是尝试创建已存在的表 (SQLITE_CONSTRAINT, SQLITE_ERROR)
+        if ((rc == SQLITE_ERROR && err_msg.find("duplicate column name") != string::npos && sql.find("ALTER TABLE") != string::npos) ||
+            (rc == SQLITE_CONSTRAINT && err_msg.find("UNIQUE constraint failed") != string::npos) ||
+            (rc == SQLITE_ERROR && err_msg.find("table") != string::npos && err_msg.find("already exists") != string::npos && sql.find("CREATE TABLE") != string::npos) ||
+            (rc == SQLITE_ERROR && err_msg.find("index") != string::npos && err_msg.find("already exists") != string::npos && sql.find("CREATE INDEX") != string::npos)) {
+            logger.warn("SQLite 执行警告 (已忽略): {}. 语句: {}", err_msg, sql);
+            return true; // 视为成功，因为是可忽略的错误
+        } else {
+            logger.error("SQLite 执行错误 (代码 {}): {}. 语句: {}", rc, err_msg, sql);
+            return false;
+        }
     }
     logger.debug("SQL 执行成功");
     return true;

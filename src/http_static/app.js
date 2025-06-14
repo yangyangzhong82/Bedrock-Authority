@@ -214,7 +214,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (effectiveData.permissions && effectiveData.permissions.length > 0) {
                 effectiveData.permissions.forEach(perm => {
                     const li = document.createElement('li');
-                    li.textContent = perm;
+                    li.textContent = `${perm.pattern} (${perm.state ? '授予' : '拒绝'})`;
                     effectivePermissionsList.appendChild(li);
                 });
             } else {

@@ -288,15 +288,24 @@ std::vector<std::vector<std::string>> MySQLDatabase::queryPrepared(const std::st
         std::vector<std::string> rowVec;
         rowVec.reserve(num_fields);
         for (int i = 0; i < num_fields; ++i) {
-             // 从 bool C 数组读取
+            // 从 bool C 数组读取
             if (is_null_arr[i]) { // 直接检查 bool 值
-                rowVec.emplace_back(""); // 或根据需要处理 NULL
+                rowVec.emplace_back(""); // 处理 NULL 值
             } else {
-                // 检查缓冲区是否太小（尽管以字符串方式获取且缓冲区大小适中时不太可能）
+                // 检查是否发生截断
                 if (error_arr[i]) { // 直接检查 bool 值
-                     logger.warn("MySQL 获取第 %d 列时发生截断/错误", i);
-                     // 处理错误，如果需要，可能使用更大的缓冲区再次获取
-                     rowVec.emplace_back(""); // 暂时使用占位符
+                    logger.warn("MySQL 获取第 {} 列时发生截断。实际长度: {}", i, result_lengths[i]);
+                    // 重新分配缓冲区并重新获取该列
+                    result_buffers[i].resize(result_lengths[i] + 1); // +1 for null terminator
+                    result_bind[i].buffer = result_buffers[i].data();
+                    result_bind[i].buffer_length = static_cast<unsigned long>(result_buffers[i].size());
+
+                    if (mysql_stmt_fetch_column(stmt, &result_bind[i], i, 0) != 0) {
+                        logger.error("MySQL mysql_stmt_fetch_column 失败: %s", mysql_stmt_error(stmt));
+                        rowVec.emplace_back(""); // 发生错误时使用空字符串
+                    } else {
+                        rowVec.emplace_back(result_buffers[i].data(), result_lengths[i]);
+                    }
                 } else {
                     rowVec.emplace_back(result_buffers[i].data(), result_lengths[i]);
                 }
@@ -307,8 +316,8 @@ std::vector<std::vector<std::string>> MySQLDatabase::queryPrepared(const std::st
 
     // 循环后检查获取错误
     if (mysql_stmt_errno(stmt) != 0 && mysql_stmt_errno(stmt) != MYSQL_NO_DATA) {
-         logger.error("MySQL mysql_stmt_fetch 失败: %s", mysql_stmt_error(stmt));
-         // 结果可能部分填充
+        logger.error("MySQL mysql_stmt_fetch 失败: %s", mysql_stmt_error(stmt));
+        // 结果可能部分填充
     }
 
 

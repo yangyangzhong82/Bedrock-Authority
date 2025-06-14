@@ -25,6 +25,7 @@
 #include <queue>         // For task queue
 #include <mutex>         // For mutex
 #include <condition_variable> // For condition variable
+#include <regex>              // For std::regex
 
 namespace BA { namespace db { class IDatabase; } } // 前向声明 IDatabase
 
@@ -62,13 +63,24 @@ struct BA_API GroupDetails {
         : id(std::move(id)), name(std::move(name)), description(std::move(description)), priority(priority), isValid(true) {}
 };
 
+// 编译后的权限规则结构体
+struct CompiledPermissionRule {
+    std::string pattern; // 原始权限模式字符串，例如 "my.perm.*"
+    std::regex  regex;   // 编译后的正则表达式对象
+    bool        state;   // true 表示授予，false 表示否定
+
+    // 构造函数
+    CompiledPermissionRule(std::string p, std::regex r, bool s) : pattern(std::move(p)), regex(std::move(r)), state(s) {}
+};
+
 
 class BA_API PermissionManager { // Export the class itself if needed, or just members
 public:
     static PermissionManager& getInstance(); // Static instance getter might not need export depending on usage
 
     /// 使用数据库实例初始化管理器（必须在调用其他 API 之前调用）。
-    void init(db::IDatabase* db);
+    /// 如果初始化成功，返回 true；否则返回 false。
+    bool init(db::IDatabase* db);
     /// 关闭权限管理器，停止异步工作线程。
     void shutdown();
 
@@ -95,7 +107,7 @@ public:
     /// 获取组直接拥有的权限（不包括继承的）
     std::vector<std::string> getDirectPermissionsOfGroup(const std::string& groupName);
     /// 获取组的最终权限（包括继承的）
-    std::vector<std::string> getPermissionsOfGroup(const std::string& groupName);
+    std::vector<CompiledPermissionRule> getPermissionsOfGroup(const std::string& groupName);
 
     /// 添加继承：子组继承父组。如果无效或已设置，则返回 false。
     bool addGroupInheritance(const std::string& groupName, const std::string& parentGroupName);
@@ -114,9 +126,11 @@ public:
     std::vector<std::string> getPlayerGroupIds(const std::string& playerUuid);
     /// 获取权限组中的玩家
     std::vector<std::string> getPlayersInGroup(const std::string& groupName);
+    /// 获取玩家所属的所有组及其优先级。
+    std::vector<GroupDetails> getPlayerGroupsWithPriorities(const std::string& playerUuid);
     /// 获取玩家最终生效的所有权限规则（考虑优先级、继承和否定），这些规则是未展开的原始规则。
     /// 实际的权限解析（通配符匹配）发生在 hasPermission 函数中。
-    std::map<std::string, bool> getAllPermissionsForPlayer(const std::string& playerUuid);
+    std::vector<CompiledPermissionRule> getAllPermissionsForPlayer(const std::string& playerUuid);
 
     /// 设置权限组的优先级（优先级越高越优先）
     bool setGroupPriority(const std::string& groupName, int priority);
@@ -133,6 +147,30 @@ public:
 
     /// 获取组的描述。如果组不存在，返回空字符串。
     std::string getGroupDescription(const std::string& groupName);
+    /// @brief 将玩家一次性添加到多个权限组。
+    /// @param playerUuid 玩家的 UUID。
+    /// @param groupNames 要添加到的组名列表。
+    /// @return 成功添加的组的数量。如果玩家或任何组不存在，或发生数据库错误，则可能小于请求的数量。
+    size_t addPlayerToGroups(const std::string& playerUuid, const std::vector<std::string>& groupNames);
+
+    /// @brief 一次性从多个权限组中移除玩家。
+    /// @param playerUuid 玩家的 UUID。
+    /// @param groupNames 要从中移除的组名列表。
+    /// @return 成功移除的组的数量。
+     size_t removePlayerFromGroups(const std::string& playerUuid, const std::vector<std::string>& groupNames);
+
+    /// @brief 将多个权限规则一次性添加到组。
+    /// @param groupName 组的名称。
+    /// @param permissionRules 要添加的权限规则列表。
+    /// @return 成功添加的规则的数量。
+     size_t addPermissionsToGroup(const std::string& groupName, const std::vector<std::string>& permissionRules);
+
+    /// @brief 一次性从组中移除多个权限规则。
+    /// @param groupName 组的名称。
+    /// @param permissionRules 要移除的权限规则列表。
+    /// @return 成功移除的规则的数量。
+     size_t
+    removePermissionsFromGroup(const std::string& groupName, const std::vector<std::string>& permissionRules);
 
 private:
     PermissionManager() = default;
@@ -147,12 +185,12 @@ private:
     // 辅助函数：从数据库获取组 ID (无锁版本)
     std::string _getGroupIdFromDb(const std::string& groupName);
 
-    // 辅助函数：将通配符模式转换为正则表达式字符串
-    std::string wildcardToRegex(const std::string& pattern);
+    // 辅助函数：将通配符模式转换为正则表达式对象
+    std::regex wildcardToRegex(const std::string& pattern);
 
-    // 新增辅助函数：递归获取所有子组
+    // 新增辅助函数：递归获取所有子组 (现在使用缓存)
     std::set<std::string> getChildGroupsRecursive(const std::string& groupName);
-    // 新增辅助函数：获取受特定组修改影响的所有玩家 UUID
+    // 新增辅助函数：获取受特定组修改影响的所有玩家 UUID (现在使用缓存)
     std::vector<std::string> getAffectedPlayersByGroup(const std::string& groupName);
 
     // --- 缓存相关 ---
@@ -174,6 +212,22 @@ private:
     void invalidateAllGroupPermissionsCache();
     // 从数据库加载所有组的权限到缓存
     void populateGroupPermissionsCache();
+
+    // 新增：继承图缓存
+    std::unordered_map<std::string, std::set<std::string>> parentToChildren_; // 父组名 -> 子组名集合
+    std::unordered_map<std::string, std::set<std::string>> childToParents_;   // 子组名 -> 父组名集合
+    mutable std::shared_mutex inheritanceCacheMutex_; // 用于保护继承图缓存的读写锁
+
+    // 新增：填充继承图缓存
+    void populateInheritanceCache();
+    // 新增：更新继承图缓存
+    void updateInheritanceCache(const std::string& groupName, const std::string& parentGroupName);
+    // 新增：从继承图缓存中移除
+    void removeInheritanceFromCache(const std::string& groupName, const std::string& parentGroupName);
+
+    // 新增辅助函数：检查继承图中是否存在从 startNode 到 endNode 的路径 (用于循环检测)
+    bool hasPath(const std::string& startNode, const std::string& endNode);
+
     // --- 结束缓存相关 ---
 
     db::IDatabase* db_ = nullptr;
@@ -184,12 +238,12 @@ private:
     mutable std::shared_mutex cacheMutex_; // mutable 允许在 const 方法中锁定
 
     // 玩家权限缓存
-    std::unordered_map<std::string, std::map<std::string, bool>> playerPermissionsCache_;
+    std::unordered_map<std::string, std::vector<CompiledPermissionRule>> playerPermissionsCache_;
     // 用于保护玩家权限缓存的读写锁
     mutable std::shared_mutex playerPermissionsCacheMutex_;
 
     // 组权限缓存 (新添加)
-    std::unordered_map<std::string, std::vector<std::string>> groupPermissionsCache_;
+    std::unordered_map<std::string, std::vector<CompiledPermissionRule>> groupPermissionsCache_;
     // 用于保护组权限缓存的读写锁 (新添加)
     mutable std::shared_mutex groupPermissionsCacheMutex_;
 
@@ -199,6 +253,11 @@ private:
     std::condition_variable condition_;
     std::thread workerThread_;
     bool running_ = false; // 控制工作线程的运行状态
+
+    // 新增：用于任务合并的成员
+    std::set<std::string> pendingGroupModifiedTasks_; // 存储待处理的 GROUP_MODIFIED 任务的组名
+    bool allGroupsModifiedPending_ = false;           // 标记 ALL_GROUPS_MODIFIED 任务是否已在队列中
+    std::mutex pendingTasksMutex_;                    // 保护 pendingGroupModifiedTasks_ 和 allGroupsModifiedPending_
 
     // 将任务推入队列
     void enqueueTask(CacheInvalidationTask task);

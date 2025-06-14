@@ -50,7 +50,10 @@ if (config_.db_type == "sqlite") {
 
         // 初始化 PermissionManager
         if (db_) {
-            permission::PermissionManager::getInstance().init(db_.get()); // 使用 get() 获取原始指针
+            if (!permission::PermissionManager::getInstance().init(db_.get())) { // 使用 get() 获取原始指针
+                getSelf().getLogger().error("PermissionManager 初始化失败，无法继续加载。");
+                return false; // 阻止加载
+            }
             getSelf().getLogger().info("PermissionManager initialized with the database connection.");
 
             // 初始化 HttpServer
@@ -93,6 +96,8 @@ bool MyMod::disable() {
     if (httpServer_) {
         httpServer_->stop();
     }
+    // 关闭 PermissionManager，停止其异步工作线程
+    permission::PermissionManager::getInstance().shutdown();
     getSelf().getLogger().info("Mod disabled");
     return true;
 }

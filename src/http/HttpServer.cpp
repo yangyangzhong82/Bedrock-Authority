@@ -270,6 +270,7 @@ void HttpServer::setupRoutes() {
             Json::Value data;
             data["permissions"].resize(0);
             for (const auto& perm : permissions) {
+                // getDirectPermissionsOfGroup 返回的是 std::string，不是 CompiledPermissionRule
                 data["permissions"].append(perm);
             }
             sendJsonResponse(resp, data);
@@ -287,11 +288,14 @@ void HttpServer::setupRoutes() {
             const std::string&                                    groupName
         ) {
             auto        resp        = drogon::HttpResponse::newHttpResponse();
-            auto        permissions = mPermissionManager.getPermissionsOfGroup(groupName);
+            auto        permissions = mPermissionManager.getPermissionsOfGroup(groupName); // 返回 CompiledPermissionRule
             Json::Value data;
             data["permissions"].resize(0);
             for (const auto& perm : permissions) {
-                data["permissions"].append(perm);
+                Json::Value permJson;
+                permJson["pattern"] = perm.pattern;
+                permJson["state"]   = perm.state;
+                data["permissions"].append(permJson);
             }
             sendJsonResponse(resp, data);
             callback(resp);

@@ -49,7 +49,11 @@ namespace BA::Command {
                 output.error("权限组 '" + param.权限组id + "' 不存在。");
                 return;
             }
-            std::vector<std::string> permissions = pm.getPermissionsOfGroup(param.权限组id);
+            std::vector<BA::permission::CompiledPermissionRule> compiledPermissions = pm.getPermissionsOfGroup(param.权限组id);
+            std::vector<std::string> permissions;
+            for (const auto& rule : compiledPermissions) {
+                permissions.push_back(rule.pattern);
+            }
             if (permissions.empty()) {
                 output.success("权限组 '" + param.权限组id + "' 没有直接或间接的权限节点。");
             } else {
@@ -226,7 +230,13 @@ namespace BA::Command {
                 if (!player) continue; // 跳过无效的玩家指针
 
                 std::string uuidStr = player->getUuid().asString(); // 获取玩家 UUID 字符串
-                std::vector<std::string> permissions = BA::permission::PermissionManager::getInstance().getAllPermissionsForPlayer(uuidStr);
+                std::vector<BA::permission::CompiledPermissionRule> playerCompiledPermissions = BA::permission::PermissionManager::getInstance().getAllPermissionsForPlayer(uuidStr);
+                std::vector<std::string> permissions;
+                for (const auto& rule : playerCompiledPermissions) {
+                    if (rule.state) { // 只添加值为 true 的权限
+                        permissions.push_back(rule.pattern);
+                    }
+                }
                 if (permissions.empty()) {
                     output.success("玩家 " + player->getRealName() + " 没有生效的权限节点。");
                 } else {
@@ -256,7 +266,13 @@ namespace BA::Command {
                 const auto& playerInfo = playerInfoOpt.value();
                 std::string uuidStr = playerInfo.uuid.asString(); // 获取 UUID
 
-                std::vector<std::string> permissions = BA::permission::PermissionManager::getInstance().getAllPermissionsForPlayer(uuidStr);
+                std::vector<BA::permission::CompiledPermissionRule> playerCompiledPermissions = BA::permission::PermissionManager::getInstance().getAllPermissionsForPlayer(uuidStr);
+                std::vector<std::string> permissions;
+                for (const auto& rule : playerCompiledPermissions) {
+                    if (rule.state) { // 只添加值为 true 的权限
+                        permissions.push_back(rule.pattern);
+                    }
+                }
                 if (permissions.empty()) {
                     output.success("玩家 " + playerInfo.name + " 没有生效的权限节点。");
                 } else {

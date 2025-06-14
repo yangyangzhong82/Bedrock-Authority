@@ -61,9 +61,21 @@ bool PostgreSQLDatabase::execute(const string& sql) {
     PGresult* res = PQexec(conn_, sql.c_str());
     if (PQresultStatus(res) != PGRES_COMMAND_OK) {
         string error_msg = PQerrorMessage(conn_);
-        logger.error("PostgreSQL 执行错误: {}", error_msg);
-        PQclear(res);
-        return false;
+        const char* sqlstate = PQresultErrorField(res, PG_DIAG_SQLSTATE);
+
+        // 定义可忽略的 PostgreSQL 错误码
+        // 23505: unique_violation (例如，插入重复的主键或唯一约束)
+        // 42P07: duplicate_table (例如，CREATE TABLE IF NOT EXISTS 失败，因为表已存在)
+        // 42701: duplicate_column (例如，ALTER TABLE ADD COLUMN IF NOT EXISTS 失败，因为列已存在)
+        if (sqlstate && (string(sqlstate) == "23505" || string(sqlstate) == "42P07" || string(sqlstate) == "42701")) {
+            logger.warn("PostgreSQL 执行警告 (已忽略 - SQLSTATE: {}): {}. 语句: {}", sqlstate, error_msg, sql);
+            PQclear(res);
+            return true; // 视为成功，因为是可忽略的错误
+        } else {
+            logger.error("PostgreSQL 执行错误 (SQLSTATE: {}): {}. 语句: {}", sqlstate ? sqlstate : "N/A", error_msg, sql);
+            PQclear(res);
+            return false;
+        }
     }
     PQclear(res);
     logger.debug("PostgreSQL 执行成功");
@@ -213,7 +225,7 @@ string PostgreSQLDatabase::getCreateTableSql(const string& tableName, const stri
 
 // 新增：获取添加列的 SQL 语句
 string PostgreSQLDatabase::getAddColumnSql(const string& tableName, const string& columnName, const string& columnDefinition) const {
-    return "ALTER TABLE " + tableName + " ADD COLUMN " + columnName + " " + columnDefinition + ";";
+    return "ALTER TABLE " + tableName + " ADD COLUMN IF NOT EXISTS " + columnName + " " + columnDefinition + ";";
 }
 
 // 新增：获取创建索引的 SQL 语句
