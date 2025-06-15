@@ -251,9 +251,9 @@ std::vector<std::vector<std::string>> MySQLDatabase::queryPrepared(const std::st
     };
 
     for (int i = 0; i < num_fields; ++i) {
-        // 分配一个合理的缓冲区大小，例如 256 字节。
+        // 分配一个合理的缓冲区大小，例如 1024 字节。
         // 对于生产环境，可能需要动态调整大小或检查字段元数据的 max_length。
-        result_buffers[i].resize(256);
+        result_buffers[i].resize(1024);
         result_bind[i] = {};
         result_bind[i].buffer_type = MYSQL_TYPE_STRING; // 将所有内容作为字符串获取
         result_bind[i].buffer = result_buffers[i].data();

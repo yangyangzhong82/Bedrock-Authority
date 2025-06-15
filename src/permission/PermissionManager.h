@@ -17,15 +17,17 @@
 
 #include <string>
 #include <vector>
-#include <unordered_map> // For cache
-#include <map>           // For std::map in playerPermissionsCache_
-#include <shared_mutex>  // For thread-safe cache access
-#include <set>           // For internal use in getAllPermissionsForPlayer
-#include <thread>        // For worker thread
-#include <queue>         // For task queue
-#include <mutex>         // For mutex
-#include <condition_variable> // For condition variable
-#include <regex>              // For std::regex
+#include <unordered_map> 
+#include <map>         
+#include <shared_mutex>  
+#include <set>           
+#include <thread>             
+#include <vector>             
+#include <queue>              
+#include <mutex>              
+#include <condition_variable> 
+#include <regex>            
+#include <atomic>            
 
 namespace BA { namespace db { class IDatabase; } } // 前向声明 IDatabase
 
@@ -47,7 +49,7 @@ struct CacheInvalidationTask {
     std::string data; // 存储组名或玩家UUID等数据
 };
 
-// 新增结构体用于返回组的详细信息
+// 结构体用于返回组的详细信息
 struct BA_API GroupDetails {
     std::string id;
     std::string name;
@@ -61,6 +63,18 @@ struct BA_API GroupDetails {
     // 带参数的构造函数
     GroupDetails(std::string id, std::string name, std::string description, int priority)
         : id(std::move(id)), name(std::move(name)), description(std::move(description)), priority(priority), isValid(true) {}
+};
+
+// 结构体用于在 getAllPermissionsForPlayer 中统一处理组权限
+struct BA_API GroupPermissionInfo {
+    std::string id;
+    std::string name;
+    int priority;
+    std::vector<std::string> directPermissionRules; // 该组直接拥有的权限规则
+
+    // 构造函数
+    GroupPermissionInfo(std::string id, std::string name, int priority, std::vector<std::string> rules)
+        : id(std::move(id)), name(std::move(name)), priority(priority), directPermissionRules(std::move(rules)) {}
 };
 
 // 编译后的权限规则结构体
@@ -82,7 +96,8 @@ public:
     /// 如果初始化成功，返回 true；否则返回 false。
     /// @param db 数据库实例指针。
     /// @param enableWarmup 是否在启动时预热缓存。
-    bool init(db::IDatabase* db, bool enableWarmup = true);
+    /// @param threadPoolSize 缓存失效工作线程池大小。
+    bool init(db::IDatabase* db, bool enableWarmup = true, unsigned int threadPoolSize = 4);
     /// 关闭权限管理器，停止异步工作线程。
     void shutdown();
 
@@ -229,10 +244,10 @@ private:
     // 新增：从继承图缓存中移除
     void removeInheritanceFromCache(const std::string& groupName, const std::string& parentGroupName);
 
-    // 新增辅助函数：检查继承图中是否存在从 startNode 到 endNode 的路径 (用于循环检测)
+    // 辅助函数：检查继承图中是否存在从 startNode 到 endNode 的路径 (用于循环检测)
     bool hasPath(const std::string& startNode, const std::string& endNode);
 
-    // 新增辅助函数：递归获取一个组的所有祖先组（包括自身）
+    // 辅助函数：递归获取一个组的所有祖先组（包括自身）
     std::set<std::string> getAllAncestorGroups(const std::string& groupName);
 
     // --- 结束缓存相关 ---
@@ -249,6 +264,11 @@ private:
     // 用于保护玩家权限缓存的读写锁
     mutable std::shared_mutex playerPermissionsCacheMutex_;
 
+    // 玩家组缓存
+    std::unordered_map<std::string, std::vector<GroupDetails>> playerGroupsCache_;
+    // 用于保护玩家组缓存的读写锁
+    mutable std::shared_mutex playerGroupsCacheMutex_;
+
     // 组权限缓存 (新添加)
     std::unordered_map<std::string, std::vector<CompiledPermissionRule>> groupPermissionsCache_;
     // 用于保护组权限缓存的读写锁 (新添加)
@@ -263,8 +283,9 @@ private:
     std::queue<CacheInvalidationTask> taskQueue_;
     std::mutex queueMutex_;
     std::condition_variable condition_;
-    std::thread workerThread_;
-    bool running_ = false; // 控制工作线程的运行状态
+    std::vector<std::thread> workerThreads_; // 线程池
+    std::atomic<bool> running_ = false;      // 控制工作线程的运行状态
+    unsigned int threadPoolSize_ = 4;        // 线程池大小
 
     // 新增：用于任务合并的成员
     std::set<std::string> pendingGroupModifiedTasks_; // 存储待处理的 GROUP_MODIFIED 任务的组名
@@ -279,6 +300,7 @@ private:
     // 实际执行缓存失效的内部函数 (由工作线程调用)
     void _invalidateGroupPermissionsCache(const std::string& groupName);
     void _invalidatePlayerPermissionsCache(const std::string& playerUuid);
+    void _invalidatePlayerGroupsCache(const std::string& playerUuid); 
     void _invalidateAllGroupPermissionsCache();
     void _invalidateAllPlayerPermissionsCache();
     // --- 结束异步任务队列相关 ---

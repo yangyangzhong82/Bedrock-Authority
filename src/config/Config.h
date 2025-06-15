@@ -28,6 +28,7 @@ struct Config {
 
     // Cache Warmup Config
     bool enable_cache_warmup = true; // 是否在启动时预热缓存
+    unsigned int cache_worker_threads = 4; // 缓存失效工作线程池大小
 };
 
 } // namespace config

@@ -102,7 +102,7 @@ bool SQLiteDatabase::executePrepared(const std::string& sql, const std::vector<s
     // 绑定参数
     for (int i = 0; i < params.size(); ++i) {
         // SQLite 绑定索引从 1 开始
-        if (sqlite3_bind_text(stmt, i + 1, params[i].c_str(), -1, SQLITE_STATIC) != SQLITE_OK) {
+        if (sqlite3_bind_text(stmt, i + 1, params[i].c_str(), -1, SQLITE_TRANSIENT) != SQLITE_OK) {
             logger.error("SQLite 绑定错误: %s", sqlite3_errmsg(db_));
             sqlite3_finalize(stmt);
             return false;
@@ -138,7 +138,7 @@ std::vector<std::vector<std::string>> SQLiteDatabase::queryPrepared(const std::s
     // 绑定参数
     for (int i = 0; i < params.size(); ++i) {
         // SQLite 绑定索引从 1 开始
-        if (sqlite3_bind_text(stmt, i + 1, params[i].c_str(), -1, SQLITE_STATIC) != SQLITE_OK) {
+        if (sqlite3_bind_text(stmt, i + 1, params[i].c_str(), -1, SQLITE_TRANSIENT) != SQLITE_OK) {
             logger.error("SQLite 绑定错误: %s", sqlite3_errmsg(db_));
             sqlite3_finalize(stmt);
             return result; // 绑定错误时返回空结果
