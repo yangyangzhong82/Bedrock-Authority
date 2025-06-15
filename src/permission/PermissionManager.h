@@ -80,7 +80,9 @@ public:
 
     /// 使用数据库实例初始化管理器（必须在调用其他 API 之前调用）。
     /// 如果初始化成功，返回 true；否则返回 false。
-    bool init(db::IDatabase* db);
+    /// @param db 数据库实例指针。
+    /// @param enableWarmup 是否在启动时预热缓存。
+    bool init(db::IDatabase* db, bool enableWarmup = true);
     /// 关闭权限管理器，停止异步工作线程。
     void shutdown();
 
@@ -212,6 +214,8 @@ private:
     void invalidateAllGroupPermissionsCache();
     // 从数据库加载所有组的权限到缓存
     void populateGroupPermissionsCache();
+    // 新增：填充权限默认值缓存
+    void populatePermissionDefaultsCache();
 
     // 新增：继承图缓存
     std::unordered_map<std::string, std::set<std::string>> parentToChildren_; // 父组名 -> 子组名集合
@@ -227,6 +231,9 @@ private:
 
     // 新增辅助函数：检查继承图中是否存在从 startNode 到 endNode 的路径 (用于循环检测)
     bool hasPath(const std::string& startNode, const std::string& endNode);
+
+    // 新增辅助函数：递归获取一个组的所有祖先组（包括自身）
+    std::set<std::string> getAllAncestorGroups(const std::string& groupName);
 
     // --- 结束缓存相关 ---
 
@@ -246,6 +253,11 @@ private:
     std::unordered_map<std::string, std::vector<CompiledPermissionRule>> groupPermissionsCache_;
     // 用于保护组权限缓存的读写锁 (新添加)
     mutable std::shared_mutex groupPermissionsCacheMutex_;
+
+    // 新增：权限默认值缓存
+    std::unordered_map<std::string, bool> permissionDefaultsCache_;
+    // 用于保护权限默认值缓存的读写锁
+    mutable std::shared_mutex permissionDefaultsCacheMutex_;
 
     // --- 异步任务队列相关 ---
     std::queue<CacheInvalidationTask> taskQueue_;

@@ -25,7 +25,10 @@ struct Config {
     std::string http_server_host = "0.0.0.0";
     unsigned int http_server_port = 8080;
     std::string http_server_static_path = "http_static";
+
+    // Cache Warmup Config
+    bool enable_cache_warmup = true; // 是否在启动时预热缓存
 };
 
 } // namespace config
-} // namespace my_mod
+} // namespace BA

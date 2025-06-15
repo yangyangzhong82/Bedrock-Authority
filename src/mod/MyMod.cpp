@@ -50,7 +50,7 @@ if (config_.db_type == "sqlite") {
 
         // 初始化 PermissionManager
         if (db_) {
-            if (!permission::PermissionManager::getInstance().init(db_.get())) { // 使用 get() 获取原始指针
+            if (!permission::PermissionManager::getInstance().init(db_.get(), config_.enable_cache_warmup)) { // 使用 get() 获取原始指针并传递预热配置
                 getSelf().getLogger().error("PermissionManager 初始化失败，无法继续加载。");
                 return false; // 阻止加载
             }

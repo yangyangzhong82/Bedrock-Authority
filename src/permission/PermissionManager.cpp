@@ -21,15 +21,20 @@ PermissionManager& PermissionManager::getInstance() {
     return instance;
 }
 
-bool PermissionManager::init(db::IDatabase* db) {
+bool PermissionManager::init(db::IDatabase* db, bool enableWarmup) {
     db_ = db;
     auto& logger = ::ll::mod::NativeMod::current()->getLogger();
     try {
         ensureTables();
-        populateGroupCache(); // 初始化时填充组名缓存
-        populateGroupPermissionsCache(); // 初始化时填充组权限缓存
-        populateInheritanceCache(); // 初始化时填充继承图缓存
-        logger.info("权限管理器已初始化并填充了组缓存、组权限缓存和继承图缓存");
+        if (enableWarmup) {
+            populateGroupCache(); // 初始化时填充组名缓存
+            populateGroupPermissionsCache(); // 初始化时填充组权限缓存
+            populateInheritanceCache(); // 初始化时填充继承图缓存
+            populatePermissionDefaultsCache(); // 初始化时填充权限默认值缓存
+            logger.info("权限管理器已初始化并填充了组缓存、组权限缓存、继承图缓存和权限默认值缓存");
+        } else {
+            logger.info("权限管理器已初始化，但跳过了缓存预热。");
+        }
 
         // 启动异步任务工作线程
         running_ = true;
@@ -193,6 +198,37 @@ void PermissionManager::_invalidateAllPlayerPermissionsCache() {
     std::unique_lock<std::shared_mutex> lock(playerPermissionsCacheMutex_);
     playerPermissionsCache_.clear();
     ::ll::mod::NativeMod::current()->getLogger().debug("所有玩家的权限缓存已失效 (由工作线程)。");
+}
+
+// 新增：填充权限默认值缓存
+void PermissionManager::populatePermissionDefaultsCache() {
+    auto& logger = ::ll::mod::NativeMod::current()->getLogger();
+    try {
+        logger.debug("正在填充权限默认值缓存...");
+        std::string sql = "SELECT name, default_value FROM permissions;";
+        auto rows = db_->queryPrepared(sql, {});
+
+        std::unique_lock<std::shared_mutex> lock(permissionDefaultsCacheMutex_);
+        permissionDefaultsCache_.clear();
+        permissionDefaultsCache_.reserve(rows.size());
+
+        for (const auto& row : rows) {
+            if (row.size() >= 2 && !row[0].empty() && !row[1].empty()) {
+                try {
+                    permissionDefaultsCache_[row[0]] = (std::stoi(row[1]) != 0);
+                } catch (const std::invalid_argument& ia) {
+                    logger.error("populatePermissionDefaultsCache: 权限 '%s' 的 default_value 无效: %s", row[0].c_str(), row[1].c_str());
+                } catch (const std::out_of_range& oor) {
+                    logger.error("populatePermissionDefaultsCache: 权限 '%s' 的 default_value 超出范围: %s", row[0].c_str(), row[1].c_str());
+                }
+            }
+        }
+        logger.debug("权限默认值缓存已填充，共 %zu 个条目。", permissionDefaultsCache_.size());
+    } catch (const std::exception& e) {
+        logger.error("填充权限默认值缓存时异常: %s", e.what());
+        std::unique_lock<std::shared_mutex> lock(permissionDefaultsCacheMutex_);
+        permissionDefaultsCache_.clear();
+    }
 }
 
 void PermissionManager::ensureTables() {
@@ -496,6 +532,38 @@ bool PermissionManager::hasPath(const std::string& startNode, const std::string&
     return false; // 未找到路径
 }
 
+// 新增辅助函数：递归获取一个组的所有祖先组（包括自身）
+std::set<std::string> PermissionManager::getAllAncestorGroups(const std::string& groupName) {
+    std::set<std::string> ancestorGroups;
+    std::queue<std::string> q;
+
+    {
+        std::shared_lock<std::shared_mutex> lock(inheritanceCacheMutex_); // 保护继承图缓存的读取
+
+        // 将起始组加入队列和已访问集合
+        q.push(groupName);
+        ancestorGroups.insert(groupName);
+
+        while (!q.empty()) {
+            std::string current = q.front();
+            q.pop();
+
+            // 查找当前组的父组
+            auto it = childToParents_.find(current);
+            if (it != childToParents_.end()) {
+                for (const std::string& parent : it->second) {
+                    if (ancestorGroups.find(parent) == ancestorGroups.end()) {
+                        ancestorGroups.insert(parent);
+                        q.push(parent);
+                    }
+                }
+            }
+        }
+    } // 锁在此处释放
+
+    return ancestorGroups;
+}
+
 // --- 结束缓存实现 ---
 
 
@@ -525,6 +593,13 @@ bool PermissionManager::registerPermission(const string& name, const string& des
         enqueueTask({CacheInvalidationTaskType::ALL_PLAYERS_MODIFIED, ""});
         // 注册新权限也可能影响所有组的通配符权限，因此需要使所有组权限缓存失效
         enqueueTask({CacheInvalidationTaskType::ALL_GROUPS_MODIFIED, ""});
+
+        // 同步更新权限默认值缓存
+        {
+            std::unique_lock<std::shared_mutex> lock(permissionDefaultsCacheMutex_);
+            permissionDefaultsCache_[name] = defaultValue;
+            logger.debug("权限默认值缓存已更新，权限 '%s' 的默认值为 %s。", name.c_str(), defaultValue ? "true" : "false");
+        }
         return true;
     }
     return false; // 或者如果 insert 是 IGNORE，则可能仅 updateOk
@@ -860,66 +935,108 @@ std::vector<CompiledPermissionRule> PermissionManager::getPermissionsOfGroup(con
     } // 共享锁在此处释放
 
     // 2. 缓存未命中，需要计算并写入缓存
-    std::vector<std::string> allRules; // 首先在这里收集所有原始规则字符串
-    std::set<std::string> visited;     // 防止继承中的循环
+    // 2.1. 收集所有相关组（当前组及其所有祖先组）
+    std::set<std::string> allRelatedGroupNames = getAllAncestorGroups(groupName);
+    logger.debug("为组 '%s' 收集到 %zu 个相关组（包括自身和所有祖先组）。", groupName.c_str(), allRelatedGroupNames.size());
 
-    std::function<void(const std::string&)> dfs = [&](const std::string& currentGroupName) {
-        if (visited.count(currentGroupName)) return;
-        visited.insert(currentGroupName);
+    if (allRelatedGroupNames.empty()) {
+        logger.warn("getPermissionsOfGroup: 未找到组 '%s' 或其任何祖先组。", groupName.c_str());
+        // 即使没有相关组，也尝试缓存空结果，避免重复计算
+        std::unique_lock<std::shared_mutex> lock(groupPermissionsCacheMutex_);
+        groupPermissionsCache_[groupName] = {};
+        return {};
+    }
 
-        logger.debug("DFS: 正在获取组 '%s' 的直接权限规则。", currentGroupName.c_str());
-        // 获取当前组的直接权限规则
-        std::string gid = _getGroupIdFromDb(currentGroupName); // 直接从数据库获取组 ID (无锁)
-        if (!gid.empty()) {
-            std::string directRulesSql = "SELECT permission_rule FROM group_permissions WHERE group_id = ?;";
-            logger.debug("DFS: 正在执行 SQL 查询直接权限: %s (GID: %s)", directRulesSql.c_str(), gid.c_str());
-            auto directRows = db_->queryPrepared(directRulesSql, {gid});
-            logger.debug("DFS: 查询直接权限返回 %zu 行。", directRows.size());
-            for (auto& row : directRows) {
-                if (!row.empty() && !row[0].empty()) { // 确保行和规则字符串不为空
-                    // 直接将原始规则字符串添加到列表中
-                    allRules.push_back(row[0]);
-                }
+    // 2.2. 获取所有相关组的 GroupDetails (包括优先级)
+    std::vector<GroupDetails> relevantGroupDetails;
+    std::vector<std::string> groupIdsForDirectPermsQuery; // 用于批量查询直接权限的组ID列表
+
+    for (const std::string& relatedGroupName : allRelatedGroupNames) {
+        GroupDetails details = getGroupDetails(relatedGroupName); // 调用现有函数获取详细信息
+        if (details.isValid) {
+            relevantGroupDetails.push_back(details);
+            // 确保 groupIdsForDirectPermsQuery 包含所有相关组的ID，以便一次性查询它们的直接权限
+            std::string gid = getCachedGroupId(relatedGroupName);
+            if (!gid.empty()) {
+                groupIdsForDirectPermsQuery.push_back(gid);
             }
         } else {
-            logger.warn("getPermissionsOfGroup (DFS): 获取直接规则时未找到组 '%s'。", currentGroupName.c_str());
+            logger.warn("getPermissionsOfGroup: 无法获取相关组 '%s' 的详细信息，跳过。", relatedGroupName.c_str());
+        }
+    }
+
+    if (relevantGroupDetails.empty()) {
+        logger.warn("getPermissionsOfGroup: 未能获取任何相关组的详细信息，无法查询权限。");
+        std::unique_lock<std::shared_mutex> lock(groupPermissionsCacheMutex_);
+        groupPermissionsCache_[groupName] = {};
+        return {};
+    }
+
+    // 2.3. 按照优先级从低到高排序相关组
+    std::sort(relevantGroupDetails.begin(), relevantGroupDetails.end(),
+              [](const GroupDetails& a, const GroupDetails& b) { return a.priority < b.priority; });
+
+    logger.debug("组 '%s' 的相关组按优先级排序 (从低到高):", groupName.c_str());
+    for (const auto& gd : relevantGroupDetails) {
+        logger.debug("- 组: %s, 优先级: %d", gd.name.c_str(), gd.priority);
+    }
+
+    // 2.4. 一次性查询所有相关组的直接权限
+    std::unordered_map<std::string, std::vector<std::string>> directPermissionsByGroup;
+    if (!groupIdsForDirectPermsQuery.empty()) {
+        std::string groupIdsPlaceholder = "";
+        for (size_t i = 0; i < groupIdsForDirectPermsQuery.size(); ++i) {
+            if (i > 0) groupIdsPlaceholder += ",";
+            groupIdsPlaceholder += "?";
         }
 
-        logger.debug("DFS: 正在获取组 '%s' 的父组。", currentGroupName.c_str());
-        // 递归地从父组获取权限
-        auto parentGroups = getParentGroups(currentGroupName);
-        logger.debug("DFS: 组 '%s' 有 %zu 个父组。", currentGroupName.c_str(), parentGroups.size());
-        for (const auto& parentGroup : parentGroups) {
-            dfs(parentGroup);
+        std::string sql = "SELECT T1.name AS group_name, gp.permission_rule "
+                          "FROM group_permissions gp "
+                          "JOIN permission_groups T1 ON gp.group_id = T1.id "
+                          "WHERE gp.group_id IN (" + groupIdsPlaceholder + ");";
+
+        logger.debug("正在执行批量查询所有相关组的直接权限: %s", sql.c_str());
+        auto rows = db_->queryPrepared(sql, groupIdsForDirectPermsQuery);
+
+        for (const auto& row : rows) {
+            if (row.size() >= 2 && !row[0].empty() && !row[1].empty()) {
+                directPermissionsByGroup[row[0]].push_back(row[1]);
+            }
         }
-    };
+        logger.debug("批量查询完成，共获取到 %zu 条直接权限规则。", rows.size());
+    } else {
+        logger.debug("getPermissionsOfGroup: 未能获取任何相关组的ID，跳过权限查询。");
+    }
 
-    dfs(groupName);
-    logger.debug("DFS 完成，共收集到 %zu 条原始权限规则。", allRules.size());
+    // 2.5. 在内存中根据优先级合并权限规则
+    std::map<std::string, bool> effectiveState; // 存储最终解析后的权限状态 (字符串 -> bool)
+    for (const auto& groupDetails : relevantGroupDetails) {
+        auto it_perms = directPermissionsByGroup.find(groupDetails.name);
+        if (it_perms != directPermissionsByGroup.end()) {
+            for (const auto& rule : it_perms->second) {
+                if (rule.empty()) continue;
 
-    // --- 解析步骤 ---
-    std::map<std::string, bool> effectiveState; // true = 授予, false = 否定
+                bool isNegatedRule = (rule[0] == '-');
+                std::string baseName = isNegatedRule ? rule.substr(1) : rule;
 
-    logger.debug("开始解析权限规则...");
-    for (const auto& rule : allRules) {
-        if (rule.empty()) continue;
+                if (baseName.empty()) continue;
 
-        bool isNegatedRule = (rule[0] == '-');
-        std::string baseName = isNegatedRule ? rule.substr(1) : rule;
-
-        if (baseName.empty()) continue; // 跳过无效规则 "-"
-
-        if (isNegatedRule) {
-            // 否定规则总是将状态设置为 false (否定)
-            effectiveState[baseName] = false;
-            logger.debug("解析规则 '%s': 将 '%s' 的状态设置为否定。", rule.c_str(), baseName.c_str());
-        } else {
-            // 肯定规则仅在未被明确否定的情况下将状态设置为 true
-            if (!effectiveState.count(baseName) || effectiveState[baseName] == true) {
-                effectiveState[baseName] = true;
-                logger.debug("解析规则 '%s': 将 '%s' 的状态设置为授予 (因为之前未被否定)。", rule.c_str(), baseName.c_str());
-            } else {
-                logger.debug("解析规则 '%s': 忽略对 '%s' 的肯定授予，因为它已被否定。", rule.c_str(), baseName.c_str());
+                if (isNegatedRule) {
+                    effectiveState[baseName] = false; // 否定规则总是覆盖
+                    logger.debug("  处理组 '%s' (优先级 %d) 的规则 '%s': 将 '%s' 的状态设置为否定。",
+                                 groupDetails.name.c_str(), groupDetails.priority, rule.c_str(), baseName.c_str());
+                } else {
+                    // 肯定规则仅在未被明确否定的情况下将状态设置为 true
+                    // 或者如果之前是肯定，则保持肯定
+                    if (!effectiveState.count(baseName) || effectiveState[baseName] == true) {
+                        effectiveState[baseName] = true;
+                        logger.debug("  处理组 '%s' (优先级 %d) 的规则 '%s': 将 '%s' 的状态设置为授予。",
+                                     groupDetails.name.c_str(), groupDetails.priority, rule.c_str(), baseName.c_str());
+                    } else {
+                        logger.debug("  处理组 '%s' (优先级 %d) 的规则 '%s': 忽略对 '%s' 的肯定授予，因为它已被否定。",
+                                     groupDetails.name.c_str(), groupDetails.priority, rule.c_str(), baseName.c_str());
+                    }
+                }
             }
         }
     }
@@ -1176,7 +1293,7 @@ std::vector<CompiledPermissionRule> PermissionManager::getAllPermissionsForPlaye
     // 2. 缓存未命中，需要计算并写入缓存
     std::map<std::string, bool> effectiveStateMap; // 存储最终解析后的权限状态 (字符串 -> bool)
 
-    // 1. 收集默认权限规则
+    // 2.1. 收集默认权限规则
     std::string defaultPermsSql = "SELECT name FROM permissions WHERE default_value = 1;";
     auto defaultRows = db_->queryPrepared(defaultPermsSql, {});
     for (const auto& row : defaultRows) {
@@ -1186,34 +1303,119 @@ std::vector<CompiledPermissionRule> PermissionManager::getAllPermissionsForPlaye
         }
     }
 
-    // 2. 获取玩家的组并按优先级排序 (使用新的 getPlayerGroupsWithPriorities 函数)
-    std::vector<GroupDetails> playerGroupInfos = getPlayerGroupsWithPriorities(playerUuid);
-    if (!playerGroupInfos.empty()) {
+    // 2.2. 获取玩家所属的所有直接组，并收集这些组及其所有祖先组的唯一集合
+    std::vector<GroupDetails> playerDirectGroupInfos = getPlayerGroupsWithPriorities(playerUuid);
+    std::set<std::string> allRelevantGroupNames; // 包含玩家直接组及其所有祖先组
+
+    for (const auto& groupInfo : playerDirectGroupInfos) {
+        std::set<std::string> ancestors = getAllAncestorGroups(groupInfo.name);
+        allRelevantGroupNames.insert(ancestors.begin(), ancestors.end());
+    }
+    logger.debug("为玩家 '%s' 收集到 %zu 个相关组（包括直接组和所有祖先组）。", playerUuid.c_str(), allRelevantGroupNames.size());
+
+    // 2.3. 一次性查询所有相关组的直接权限
+    std::string groupIdsPlaceholder = "";
+    std::vector<std::string> groupIdsForQuery; // 存储所有相关组的ID，用于SQL参数
+
+    for (const std::string& relevantGroupName : allRelevantGroupNames) {
+        std::string gid = getCachedGroupId(relevantGroupName);
+        if (!gid.empty()) {
+            groupIdsForQuery.push_back(gid);
+            if (!groupIdsPlaceholder.empty()) {
+                groupIdsPlaceholder += ",";
+            }
+            groupIdsPlaceholder += "?";
+        } else {
+            logger.warn("getAllPermissionsForPlayer: 无法获取相关组 '%s' 的ID，跳过其权限查询。", relevantGroupName.c_str());
+        }
+    }
+
+    std::unordered_map<std::string, std::vector<std::string>> directPermissionsByGroup;
+    if (!groupIdsForQuery.empty()) {
+        std::string sql = "SELECT T1.name AS group_name, gp.permission_rule "
+                          "FROM group_permissions gp "
+                          "JOIN permission_groups T1 ON gp.group_id = T1.id "
+                          "WHERE gp.group_id IN (" + groupIdsPlaceholder + ");";
+
+        logger.debug("正在执行批量查询所有相关组的直接权限: %s", sql.c_str());
+        auto rows = db_->queryPrepared(sql, groupIdsForQuery);
+
+        for (const auto& row : rows) {
+            if (row.size() >= 2 && !row[0].empty() && !row[1].empty()) {
+                directPermissionsByGroup[row[0]].push_back(row[1]);
+            }
+        }
+        logger.debug("批量查询完成，共获取到 %zu 条直接权限规则。", rows.size());
+    } else {
+        logger.debug("getAllPermissionsForPlayer: 未能获取任何相关组的ID，跳过权限查询。");
+    }
+
+
+    // 2.4. 在内存中根据玩家所属组的优先级和继承关系合并权限
+    if (!playerDirectGroupInfos.empty()) {
         // 按照优先级从低到高排序，以便高优先级的规则后应用
-        std::sort(playerGroupInfos.begin(), playerGroupInfos.end(),
+        std::sort(playerDirectGroupInfos.begin(), playerDirectGroupInfos.end(),
                   [](const GroupDetails& a, const GroupDetails& b) { return a.priority < b.priority; });
 
         logger.debug("玩家 '%s' 的组按优先级排序 (从低到高):", playerUuid.c_str());
-        for (const auto& gi : playerGroupInfos) {
+        for (const auto& gi : playerDirectGroupInfos) {
             logger.debug("- 组: %s, 优先级: %d", gi.name.c_str(), gi.priority);
         }
 
-        // 3. 按优先级顺序收集所有组的规则并进行解析
-        for (const auto& groupInfo : playerGroupInfos) {
-            // getPermissionsOfGroup 返回此组的已解析和编译的规则
-            auto groupRules = getPermissionsOfGroup(groupInfo.name);
-            logger.debug("从组 '%s' (优先级 %d) 收集并解析规则: %zu 条规则", groupInfo.name.c_str(), groupInfo.priority,
-                         groupRules.size());
-            for (const auto& rule : groupRules) {
-                // rule.pattern 是原始字符串，rule.state 是解析后的状态
-                if (rule.state) {
-                    effectiveStateMap[rule.pattern] = true; // 肯定规则覆盖
-                    logger.debug("  解析规则 '%s': 将 '%s' 的状态设置为授予。", rule.pattern.c_str(),
-                                 rule.pattern.c_str());
-                } else {
-                    effectiveStateMap[rule.pattern] = false; // 否定规则覆盖
-                    logger.debug("  解析规则 '%s': 将 '%s' 的状态设置为否定。", rule.pattern.c_str(),
-                                 rule.pattern.c_str());
+        for (const auto& groupInfo : playerDirectGroupInfos) {
+            // 对于每个玩家直接所属的组，我们需要获取其所有祖先组的权限，并按继承链顺序合并
+            std::set<std::string> currentGroupAndAncestors = getAllAncestorGroups(groupInfo.name);
+            std::vector<std::string> groupsToProcessForThisBranch; // 存储当前分支的处理顺序
+
+            // 使用 BFS 遍历继承图，从当前组开始，向上遍历所有祖先组，以确定处理顺序
+            std::queue<std::string> q_branch;
+            std::set<std::string> visited_branch;
+
+            q_branch.push(groupInfo.name);
+            visited_branch.insert(groupInfo.name);
+
+            while (!q_branch.empty()) {
+                std::string current = q_branch.front();
+                q_branch.pop();
+                groupsToProcessForThisBranch.push_back(current);
+
+                std::shared_lock<std::shared_mutex> lock(inheritanceCacheMutex_);
+                auto it = childToParents_.find(current);
+                if (it != childToParents_.end()) {
+                    for (const std::string& parent : it->second) {
+                        if (visited_branch.find(parent) == visited_branch.end()) {
+                            visited_branch.insert(parent);
+                            q_branch.push(parent);
+                        }
+                    }
+                }
+            }
+            std::reverse(groupsToProcessForThisBranch.begin(), groupsToProcessForThisBranch.end()); // 从最远祖先开始
+
+            logger.debug("处理组 '%s' (优先级 %d) 的继承链:", groupInfo.name.c_str(), groupInfo.priority);
+            for (const auto& inheritedGroup : groupsToProcessForThisBranch) {
+                auto it_perms = directPermissionsByGroup.find(inheritedGroup);
+                if (it_perms != directPermissionsByGroup.end()) {
+                    for (const auto& rule : it_perms->second) {
+                        if (rule.empty()) continue;
+
+                        bool isNegatedRule = (rule[0] == '-');
+                        std::string baseName = isNegatedRule ? rule.substr(1) : rule;
+
+                        if (baseName.empty()) continue;
+
+                        if (isNegatedRule) {
+                            effectiveStateMap[baseName] = false;
+                            logger.debug("  继承组 '%s' 的规则 '%s': 将 '%s' 的状态设置为否定。", inheritedGroup.c_str(), rule.c_str(), baseName.c_str());
+                        } else {
+                            if (!effectiveStateMap.count(baseName) || effectiveStateMap[baseName] == true) {
+                                effectiveStateMap[baseName] = true;
+                                logger.debug("  继承组 '%s' 的规则 '%s': 将 '%s' 的状态设置为授予。", inheritedGroup.c_str(), rule.c_str(), baseName.c_str());
+                            } else {
+                                logger.debug("  继承组 '%s' 的规则 '%s': 忽略对 '%s' 的肯定授予，因为它已被否定。", inheritedGroup.c_str(), rule.c_str(), baseName.c_str());
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1228,7 +1430,6 @@ std::vector<CompiledPermissionRule> PermissionManager::getAllPermissionsForPlaye
             finalCompiledPerms.emplace_back(pair.first, wildcardToRegex(pair.first), pair.second);
         } catch (const std::regex_error& e) {
             logger.error("编译玩家权限规则 '%s' 时异常: %s", pair.first.c_str(), e.what());
-            // 可以在这里选择跳过此规则或以其他方式处理错误
         }
     }
 
@@ -1238,7 +1439,7 @@ std::vector<CompiledPermissionRule> PermissionManager::getAllPermissionsForPlaye
                   return a.pattern.length() > b.pattern.length();
               });
 
-    // 4. 将结果存储到缓存
+    // 3. 将结果存储到缓存
     {
         std::unique_lock<std::shared_mutex> lock(playerPermissionsCacheMutex_);
         playerPermissionsCache_[playerUuid] = finalCompiledPerms;
@@ -1291,20 +1492,34 @@ bool PermissionManager::hasPermission(const std::string& playerUuid, const std::
     // 默认值：如果没有任何规则匹配，则使用权限的默认值。
     bool finalPermissionState = false; // 默认拒绝
 
-    // 检查权限的默认值
-    std::string defaultSql = "SELECT default_value FROM permissions WHERE name = ? LIMIT 1;";
-    auto rows = db_->queryPrepared(defaultSql, {permissionNode});
-    if (!rows.empty() && !rows[0].empty()) {
-        try {
-            finalPermissionState = std::stoi(rows[0][0]) != 0;
-            logger.debug("权限 '%s' 初始默认值: %s", permissionNode.c_str(), finalPermissionState ? "true" : "false");
-        } catch (const std::invalid_argument& ia) {
-            logger.error("权限 '%s' 的 default_value 无效: %s", permissionNode.c_str(), rows[0][0].c_str());
-        } catch (const std::out_of_range& oor) {
-            logger.error("权限 '%s' 的 Default_value 超出范围: %s", permissionNode.c_str(), rows[0][0].c_str());
+    // 检查权限的默认值 (从缓存中获取)
+    {
+        std::shared_lock<std::shared_mutex> lock(permissionDefaultsCacheMutex_);
+        auto it = permissionDefaultsCache_.find(permissionNode);
+        if (it != permissionDefaultsCache_.end()) {
+            finalPermissionState = it->second;
+            logger.debug("权限 '%s' 初始默认值 (来自缓存): %s", permissionNode.c_str(), finalPermissionState ? "true" : "false");
+        } else {
+            // 如果缓存中没有，则回退到数据库查询并填充缓存 (这应该很少发生，因为 init 和 registerPermission 会填充)
+            logger.warn("权限默认值缓存中未找到权限节点 '%s'，回退到数据库查询。", permissionNode.c_str());
+            std::string defaultSql = "SELECT default_value FROM permissions WHERE name = ? LIMIT 1;";
+            auto rows = db_->queryPrepared(defaultSql, {permissionNode});
+            if (!rows.empty() && !rows[0].empty()) {
+                try {
+                    finalPermissionState = std::stoi(rows[0][0]) != 0;
+                    // 填充缓存
+                    std::unique_lock<std::shared_mutex> writeLock(permissionDefaultsCacheMutex_);
+                    permissionDefaultsCache_[permissionNode] = finalPermissionState;
+                    logger.debug("权限 '%s' 初始默认值 (来自数据库并已缓存): %s", permissionNode.c_str(), finalPermissionState ? "true" : "false");
+                } catch (const std::invalid_argument& ia) {
+                    logger.error("权限 '%s' 的 default_value 无效: %s", permissionNode.c_str(), rows[0][0].c_str());
+                } catch (const std::out_of_range& oor) {
+                    logger.error("权限 '%s' 的 Default_value 超出范围: %s", permissionNode.c_str(), rows[0][0].c_str());
+                }
+            } else {
+                logger.debug("在 permissions 表中未找到权限节点 '%s'，使用默认拒绝。", permissionNode.c_str());
+            }
         }
-    } else {
-        logger.debug("在 permissions 表中未找到权限节点 '%s'，使用默认拒绝。", permissionNode.c_str());
     }
 
     // 遍历玩家的有效权限列表，该列表已按特异性（长度）降序排序
