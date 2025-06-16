@@ -3,12 +3,13 @@
 #include "ll/api/mod/NativeMod.h"
 #include "permission/PermissionCache.h"
 #include "permission/PermissionStorage.h"
-#include <string>          // 显式包含 string
-#include <vector>          // 显式包含 vector
-#include <unordered_map>   // 显式包含 unordered_map
-#include <set>             // 显式包含 set
-#include <stdexcept>       // 显式包含 stdexcept 用于 std::exception
-#include <utility>         // 显式包含 utility 用于 std::move
+#include <set>           // 显式包含 set
+#include <stdexcept>     // 显式包含 stdexcept 用于 std::exception
+#include <string>        // 显式包含 string
+#include <unordered_map> // 显式包含 unordered_map
+#include <utility>       // 显式包含 utility 用于 std::move
+#include <vector>        // 显式包含 vector
+
 
 namespace BA {
 namespace permission {
@@ -52,7 +53,10 @@ void AsyncCacheInvalidator::start(unsigned int threadPoolSize) {
         m_workerThreads.emplace_back(&AsyncCacheInvalidator::processTasks, this);
         ::ll::mod::NativeMod::current()->getLogger().debug("AsyncCacheInvalidator: 启动工作线程 #{}。", i + 1);
     }
-    ::ll::mod::NativeMod::current()->getLogger().info("AsyncCacheInvalidator: 已启动，线程池大小为 {}。", threadPoolSize);
+    ::ll::mod::NativeMod::current()->getLogger().info(
+        "AsyncCacheInvalidator: 已启动，线程池大小为 {}。",
+        threadPoolSize
+    );
 }
 
 /**
@@ -95,37 +99,62 @@ void AsyncCacheInvalidator::stop() {
  */
 void AsyncCacheInvalidator::enqueueTask(CacheInvalidationTask task) {
     if (!m_running) {
-        ::ll::mod::NativeMod::current()->getLogger().warn("AsyncCacheInvalidator: 未运行，任务被丢弃。任务类型: {}, 数据: {}", static_cast<int>(task.type), task.data);
+        ::ll::mod::NativeMod::current()->getLogger().warn(
+            "AsyncCacheInvalidator: 未运行，任务被丢弃。任务类型: {}, 数据: {}",
+            static_cast<int>(task.type),
+            task.data
+        );
         return;
     }
 
-    // 扩大 m_pendingTasksMutex 的锁定范围，使其包含对 m_taskQueue 的操作
+    bool task_merged = false;
     {
-        std::unique_lock<std::mutex> pendingLock(m_pendingTasksMutex); // 先锁定 m_pendingTasksMutex
+        std::unique_lock<std::mutex> pendingLock(m_pendingTasksMutex); // 锁定 m_pendingTasksMutex
         // 任务合并逻辑
         if (task.type == CacheInvalidationTaskType::GROUP_MODIFIED) {
             if (m_allGroupsModifiedPending || m_pendingGroupModifiedTasks.count(task.data)) {
-                ::ll::mod::NativeMod::current()->getLogger().debug("AsyncCacheInvalidator: 合并 GROUP_MODIFIED 任务，组: '{}'。", task.data);
-                return; // 已合并
+                ::ll::mod::NativeMod::current()->getLogger().debug(
+                    "AsyncCacheInvalidator: 合并 GROUP_MODIFIED 任务，组: '{}'。",
+                    task.data
+                );
+                task_merged = true;
+            } else {
+                m_pendingGroupModifiedTasks.insert(task.data);
+                ::ll::mod::NativeMod::current()->getLogger().debug(
+                    "AsyncCacheInvalidator: 入队 GROUP_MODIFIED 任务，组: '{}'。",
+                    task.data
+                );
             }
-            m_pendingGroupModifiedTasks.insert(task.data);
-            ::ll::mod::NativeMod::current()->getLogger().debug("AsyncCacheInvalidator: 入队 GROUP_MODIFIED 任务，组: '{}'。", task.data);
         } else if (task.type == CacheInvalidationTaskType::ALL_GROUPS_MODIFIED) {
             if (m_allGroupsModifiedPending) {
-                ::ll::mod::NativeMod::current()->getLogger().debug("AsyncCacheInvalidator: 合并 ALL_GROUPS_MODIFIED 任务。");
-                return; // 已合并
+                ::ll::mod::NativeMod::current()->getLogger().debug(
+                    "AsyncCacheInvalidator: 合并 ALL_GROUPS_MODIFIED 任务。"
+                );
+                task_merged = true;
+            } else {
+                m_pendingGroupModifiedTasks.clear(); // ALL 任务包含所有特定组修改
+                m_allGroupsModifiedPending = true;
+                ::ll::mod::NativeMod::current()->getLogger().debug("AsyncCacheInvalidator: 入队 ALL_GROUPS_MODIFIED 任务。"
+                );
             }
-            m_pendingGroupModifiedTasks.clear(); // ALL 任务包含所有特定组修改
-            m_allGroupsModifiedPending = true;
-            ::ll::mod::NativeMod::current()->getLogger().debug("AsyncCacheInvalidator: 入队 ALL_GROUPS_MODIFIED 任务。");
         } else {
-            ::ll::mod::NativeMod::current()->getLogger().debug("AsyncCacheInvalidator: 入队任务，类型: {}, 数据: '{}'。", static_cast<int>(task.type), task.data);
+            ::ll::mod::NativeMod::current()->getLogger().debug(
+                "AsyncCacheInvalidator: 入队任务，类型: {}, 数据: '{}'。",
+                static_cast<int>(task.type),
+                task.data
+            );
         }
+    } // pendingLock 在这里释放
 
-        // 在 m_pendingTasksMutex 保护下将任务推入队列
-        std::unique_lock<std::mutex> queueLock(m_queueMutex); // 然后锁定 m_queueMutex
-        m_taskQueue.push(std::move(task));
+    if (task_merged) {
+        return; // 任务已合并，无需入队
     }
+
+    // 在 m_pendingTasksMutex 释放后，再锁定 m_queueMutex 将任务推入队列
+    {
+        std::unique_lock<std::mutex> queueLock(m_queueMutex); // 锁定 m_queueMutex
+        m_taskQueue.push(std::move(task));
+    } // queueLock 在这里释放
     m_condition.notify_one();
 }
 
@@ -138,19 +167,22 @@ void AsyncCacheInvalidator::processTasks() {
     while (true) {
         CacheInvalidationTask task;
         {
-            // 统一锁顺序：先获取 m_pendingTasksMutex，再获取 m_queueMutex
-            std::unique_lock<std::mutex> pendingLock(m_pendingTasksMutex); // 锁A
-            std::unique_lock<std::mutex> queueLock(m_queueMutex);          // 锁B
-
-            // 等待队列非空
+            std::unique_lock<std::mutex> queueLock(m_queueMutex); // 只锁定 m_queueMutex
             m_condition.wait(queueLock, [this] { return !m_taskQueue.empty(); });
 
-            // 从队列中取出任务
             task = std::move(m_taskQueue.front());
             m_taskQueue.pop();
+        } // queueLock 在这里释放
 
-            // 在 m_pendingTasksMutex 保护下更新待处理任务状态
-            // 此时 m_pendingTasksMutex 已经被持有，所以可以直接修改
+        // 优先处理 SHUTDOWN 任务
+        if (task.type == CacheInvalidationTaskType::SHUTDOWN) {
+            logger.debug("AsyncCacheInvalidator: 工作线程收到 SHUTDOWN 任务并正在退出。");
+            break; // 退出循环并终止线程
+        }
+
+        // 在处理任务之前，更新待处理任务状态，这部分需要 m_pendingTasksMutex
+        {
+            std::unique_lock<std::mutex> pendingLock(m_pendingTasksMutex); // 锁定 m_pendingTasksMutex
             if (task.type == CacheInvalidationTaskType::GROUP_MODIFIED) {
                 m_pendingGroupModifiedTasks.erase(task.data);
                 logger.debug("AsyncCacheInvalidator: 从待处理集合中移除 GROUP_MODIFIED 任务，组: '{}'。", task.data);
@@ -158,13 +190,7 @@ void AsyncCacheInvalidator::processTasks() {
                 m_allGroupsModifiedPending = false;
                 logger.debug("AsyncCacheInvalidator: 从待处理集合中移除 ALL_GROUPS_MODIFIED 任务。");
             }
-        } // pendingLock 和 queueLock 在这里同时释放
-
-        // 优先处理 SHUTDOWN 任务
-        if (task.type == CacheInvalidationTaskType::SHUTDOWN) {
-            logger.debug("AsyncCacheInvalidator: 工作线程收到 SHUTDOWN 任务并正在退出。");
-            break; // 退出循环并终止线程
-        }
+        } // pendingLock 在这里释放
 
         try {
             switch (task.type) {
@@ -173,13 +199,18 @@ void AsyncCacheInvalidator::processTasks() {
                 // 组的权限或继承关系发生变化。
                 // 这会影响组本身、其所有子组以及这些组中的所有玩家。
                 std::set<std::string> affectedGroups = m_cache.getChildGroupsRecursive(task.data);
-                logger.debug("AsyncCacheInvalidator: 组 '{}' 及其子组共 {} 个受影响。", task.data, affectedGroups.size());
+                logger
+                    .debug("AsyncCacheInvalidator: 组 '{}' 及其子组共 {} 个受影响。", task.data, affectedGroups.size());
                 for (const auto& groupName : affectedGroups) {
                     m_cache.invalidateGroupPermissions(groupName);
                     logger.debug("AsyncCacheInvalidator: 使组 '{}' 的权限缓存失效。", groupName);
 
                     std::vector<std::string> affectedPlayers = getAffectedPlayersByGroup(groupName);
-                    logger.debug("AsyncCacheInvalidator: 组 '{}' 中有 {} 个受影响的玩家。", groupName, affectedPlayers.size());
+                    logger.debug(
+                        "AsyncCacheInvalidator: 组 '{}' 中有 {} 个受影响的玩家。",
+                        groupName,
+                        affectedPlayers.size()
+                    );
                     for (const auto& playerUuid : affectedPlayers) {
                         m_cache.invalidatePlayerPermissions(playerUuid);
                         logger.debug("AsyncCacheInvalidator: 使玩家 '{}' 的权限缓存失效。", playerUuid);
@@ -231,7 +262,7 @@ void AsyncCacheInvalidator::processTasks() {
  * @return 受影响玩家的UUID列表。
  */
 std::vector<std::string> AsyncCacheInvalidator::getAffectedPlayersByGroup(const std::string& groupName) {
-    auto&       logger = ::ll::mod::NativeMod::current()->getLogger();
+    auto&                 logger = ::ll::mod::NativeMod::current()->getLogger();
     std::set<std::string> affectedPlayerUuids;
 
     // 从缓存中获取所有后代组（包括组本身）。
@@ -252,7 +283,8 @@ std::vector<std::string> AsyncCacheInvalidator::getAffectedPlayersByGroup(const 
     }
 
     // 批量获取组ID
-    std::unordered_map<std::string, std::string> groupNameToIdMap = m_storage.fetchGroupIdsByNames(groupNamesToFetchIds);
+    std::unordered_map<std::string, std::string> groupNameToIdMap =
+        m_storage.fetchGroupIdsByNames(groupNamesToFetchIds);
 
     std::vector<std::string> groupIdsToFetchPlayers;
     for (const auto& gName : allRelatedGroups) {
@@ -266,7 +298,11 @@ std::vector<std::string> AsyncCacheInvalidator::getAffectedPlayersByGroup(const 
     if (!groupIdsToFetchPlayers.empty()) {
         std::vector<std::string> playersInGroups = m_storage.fetchPlayersInGroups(groupIdsToFetchPlayers);
         affectedPlayerUuids.insert(playersInGroups.begin(), playersInGroups.end());
-        logger.debug("AsyncCacheInvalidator: 从 {} 个组中获取到 {} 个玩家。", groupIdsToFetchPlayers.size(), playersInGroups.size());
+        logger.debug(
+            "AsyncCacheInvalidator: 从 {} 个组中获取到 {} 个玩家。",
+            groupIdsToFetchPlayers.size(),
+            playersInGroups.size()
+        );
     } else {
         logger.debug("AsyncCacheInvalidator: 没有需要获取玩家的组ID。");
     }
