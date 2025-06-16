@@ -18,19 +18,52 @@ optional<string> PermissionCache::findGroupId(const string& groupName) {
     return nullopt;
 }
 
+optional<string> PermissionCache::findGroupName(const string& groupId) {
+    shared_lock<shared_mutex> lock(m_groupIdMutex);
+    auto                      it = m_groupIdCache.find(groupId);
+    if (it != m_groupIdCache.end()) {
+        return it->second;
+    }
+    return nullopt;
+}
+
+
 void PermissionCache::storeGroup(const string& groupName, const string& groupId) {
-    unique_lock<shared_mutex> lock(m_groupNameMutex);
+    unique_lock<shared_mutex> nameLock(m_groupNameMutex);
+    unique_lock<shared_mutex> idLock(m_groupIdMutex);
+
+    // 如果旧的组名存在，先移除旧的ID映射
+    auto it = m_groupNameCache.find(groupName);
+    if (it != m_groupNameCache.end()) {
+        m_groupIdCache.erase(it->second);
+    }
+
     m_groupNameCache[groupName] = groupId;
+    m_groupIdCache[groupId]     = groupName;
 }
 
 void PermissionCache::invalidateGroup(const string& groupName) {
-    unique_lock<shared_mutex> lock(m_groupNameMutex);
-    m_groupNameCache.erase(groupName);
+    unique_lock<shared_mutex> nameLock(m_groupNameMutex);
+    unique_lock<shared_mutex> idLock(m_groupIdMutex);
+
+    auto it = m_groupNameCache.find(groupName);
+    if (it != m_groupNameCache.end()) {
+        m_groupIdCache.erase(it->second); // 移除ID到名称的映射
+        m_groupNameCache.erase(it);       // 移除名称到ID的映射
+    }
 }
 
 void PermissionCache::populateAllGroups(unordered_map<string, string>&& groupNameMap) {
-    unique_lock<shared_mutex> lock(m_groupNameMutex);
-    m_groupNameCache = std::move(groupNameMap);
+    unique_lock<shared_mutex> nameLock(m_groupNameMutex);
+    unique_lock<shared_mutex> idLock(m_groupIdMutex);
+
+    m_groupNameCache.clear();
+    m_groupIdCache.clear();
+
+    for (auto& pair : groupNameMap) {
+        m_groupNameCache[pair.first] = pair.second;
+        m_groupIdCache[pair.second]  = pair.first;
+    }
 }
 
 const std::unordered_map<std::string, std::string>& PermissionCache::getAllGroups() const {

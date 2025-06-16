@@ -14,6 +14,7 @@ class PermissionCache {
 public:
     // Group Name/ID Cache
     std::optional<std::string> findGroupId(const std::string& groupName);
+    std::optional<std::string> findGroupName(const std::string& groupId); // 新增：通过ID查找组名
     void                       storeGroup(const std::string& groupName, const std::string& groupId);
     void                       invalidateGroup(const std::string& groupName);
     void                       populateAllGroups(std::unordered_map<std::string, std::string>&& groupNameMap);
@@ -56,6 +57,7 @@ public:
 private:
     // Caches
     std::unordered_map<std::string, std::string>                         m_groupNameCache;
+    std::unordered_map<std::string, std::string>                         m_groupIdCache; // 新增：ID到名称的映射
     std::unordered_map<std::string, std::vector<CompiledPermissionRule>> m_playerPermissionsCache;
     std::unordered_map<std::string, std::vector<GroupDetails>>           m_playerGroupsCache;
     std::unordered_map<std::string, std::vector<CompiledPermissionRule>> m_groupPermissionsCache;
@@ -65,6 +67,7 @@ private:
 
     // Mutexes
     mutable std::shared_mutex m_groupNameMutex;
+    mutable std::shared_mutex m_groupIdMutex; // 新增：ID到名称映射的互斥锁
     mutable std::shared_mutex m_playerPermissionsMutex;
     mutable std::shared_mutex m_playerGroupsMutex;
     mutable std::shared_mutex m_groupPermissionsMutex;
