@@ -383,13 +383,9 @@ std::vector<std::string> PermissionManager::PermissionManagerImpl::getDirectPare
         // 这里需要一个反向查找，或者在PermissionStorage中添加一个根据ID获取组名的方法
         // 为了简化，我们暂时直接查询数据库，或者遍历m_groupNameCache
         // 更好的方法是在PermissionCache中添加一个findGroupNameById方法
-        // 暂时通过遍历m_cache->m_groupNameCache来实现
-        auto cachedGroups = m_cache->getAllGroups(); // 获取所有缓存的组名到ID的映射
-        for (const auto& pair : cachedGroups) {
-            if (pair.second == parentId) {
-                directParents.push_back(pair.first);
-                break;
-            }
+        auto parentName = m_cache->findGroupName(parentId);
+        if (parentName) {
+            directParents.push_back(*parentName);
         }
     }
     return directParents;
