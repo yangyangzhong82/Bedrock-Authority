@@ -60,6 +60,7 @@ public:
     std::vector<std::string>  fetchPlayersInGroups(const std::vector<std::string>& groupIds); // New: Fetch players in multiple groups
     std::unordered_map<std::string, std::string> fetchGroupIdsByNames(const std::set<std::string>& groupNames); // New: Fetch group IDs by names
     std::unordered_map<std::string, std::string> fetchGroupNamesByIds(const std::vector<std::string>& groupIds); // New: Fetch group names by IDs
+    std::unordered_map<std::string, GroupDetails> fetchGroupDetailsByNames(const std::set<std::string>& groupNames); // New: Fetch group details by names
 
     size_t                    addPlayerToGroups(
                            const std::string&                                      playerUuid,

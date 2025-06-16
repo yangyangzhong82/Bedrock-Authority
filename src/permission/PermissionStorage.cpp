@@ -400,6 +400,30 @@ std::unordered_map<std::string, std::string> PermissionStorage::fetchGroupIdsByN
     return groupNameMap;
 }
 
+std::unordered_map<std::string, GroupDetails> PermissionStorage::fetchGroupDetailsByNames(const std::set<std::string>& groupNames) {
+    if (!m_db || groupNames.empty()) return {};
+    std::unordered_map<std::string, GroupDetails> groupDetailsMap;
+    std::vector<std::string>                 namesVec(groupNames.begin(), groupNames.end());
+    std::string                         placeholders = m_db->getInClausePlaceholders(namesVec.size());
+    std::string                         sql          = "SELECT id, name, description, priority FROM permission_groups WHERE name IN (" + placeholders + ");";
+    auto                           rows         = m_db->queryPrepared(sql, namesVec);
+
+    for (const auto& row : rows) {
+        if (row.size() >= 4 && !row[0].empty() && !row[1].empty() && !row[2].empty() && !row[3].empty()) {
+            try {
+                int priority = std::stoi(row[3]);
+                groupDetailsMap[row[1]] = GroupDetails(row[0], row[1], row[2], priority);
+            } catch (const std::exception& e) {
+                ::ll::mod::NativeMod::current()->getLogger().warn(
+                    "PermissionStorage: Failed to convert priority '{}' for group '{}' to int: {}",
+                    row[3], row[1], e.what()
+                );
+            }
+        }
+    }
+    return groupDetailsMap;
+}
+
 // --- Bulk Operations ---
 size_t
 PermissionStorage::addPermissionsToGroup(const std::string& groupId, const std::vector<std::string>& permissionRules) {

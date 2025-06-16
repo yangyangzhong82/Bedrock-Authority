@@ -260,12 +260,14 @@ PermissionManager::PermissionManagerImpl::getPermissionsOfGroup(const std::strin
     }
 
     // 2. Cache miss, calculate
-    set<string>          ancestorNames = m_cache->getAllAncestorGroups(groupName);
-    vector<GroupDetails> relevantGroups;
+    set<string> ancestorNames = m_cache->getAllAncestorGroups(groupName);
+    // 批量获取组详情
+    unordered_map<string, GroupDetails> relevantGroupsMap = m_storage->fetchGroupDetailsByNames(ancestorNames);
+    vector<GroupDetails>                relevantGroups;
     for (const auto& name : ancestorNames) {
-        auto details = getGroupDetails(name);
-        if (details.isValid) {
-            relevantGroups.push_back(details);
+        auto it = relevantGroupsMap.find(name);
+        if (it != relevantGroupsMap.end()) {
+            relevantGroups.push_back(it->second);
         }
     }
 
@@ -487,11 +489,13 @@ PermissionManager::PermissionManagerImpl::getAllPermissionsForPlayer(const std::
         allRelevantGroupNames.insert(ancestors.begin(), ancestors.end());
     }
 
-    vector<GroupDetails> allRelevantGroupsDetails;
+    // 批量获取所有相关组的详情
+    unordered_map<string, GroupDetails> allRelevantGroupsMap = m_storage->fetchGroupDetailsByNames(allRelevantGroupNames);
+    vector<GroupDetails>                allRelevantGroupsDetails;
     for (const auto& name : allRelevantGroupNames) {
-        auto details = getGroupDetails(name);
-        if (details.isValid) {
-            allRelevantGroupsDetails.push_back(details);
+        auto it = allRelevantGroupsMap.find(name);
+        if (it != allRelevantGroupsMap.end()) {
+            allRelevantGroupsDetails.push_back(it->second);
         }
     }
 
