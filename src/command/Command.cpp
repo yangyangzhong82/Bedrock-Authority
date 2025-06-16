@@ -20,6 +20,29 @@ namespace BA::Command {
     void RegisterCommands() {
         using namespace ll::command;
         auto& Registrar = CommandRegistrar::getInstance();
+        auto& pm = BA::permission::PermissionManager::getInstance(); // 获取 PermissionManager 实例
+
+        // --- 注册/更新 SoftEnum for Permission Groups ---
+        const std::string groupEnumName = ll::command::enum_name_v<SoftEnum<PermissionGroupEnum>>;
+        std::vector<std::string> groupNames = pm.getAllGroups(); // 获取所有权限组名称
+
+        if (!Registrar.hasSoftEnum(groupEnumName)) {
+            Registrar.tryRegisterSoftEnum(groupEnumName, groupNames);
+        } else {
+            Registrar.setSoftEnumValues(groupEnumName, groupNames);
+        }
+
+        // --- 注册/更新 SoftEnum for Permission Nodes ---
+        const std::string nodeEnumName = ll::command::enum_name_v<SoftEnum<PermissionNodeEnum>>;
+        std::vector<std::string> nodeNames = pm.getAllPermissions(); // 获取所有权限节点名称
+
+        if (!Registrar.hasSoftEnum(nodeEnumName)) {
+            Registrar.tryRegisterSoftEnum(nodeEnumName, nodeNames);
+        } else {
+            Registrar.setSoftEnumValues(nodeEnumName, nodeNames);
+        }
+        // --- SoftEnum 注册/更新结束 ---
+
         auto& cmd = Registrar.getOrCreateCommand(
             "bedrockauthority",                         // 命令名
             "权限",                // 命令描述
@@ -33,7 +56,7 @@ namespace BA::Command {
         .text("创建权限组")
         .required("权限组id")
         .execute([&](CommandOrigin const& origin, CommandOutput& output, 创建权限组 const& param, ::Command const&) {
-        bool ok = BA::permission::PermissionManager::getInstance().createGroup(param.权限组id,"A");
+        bool ok = pm.createGroup(param.权限组id,"A");
         if (ok) {
             output.success("已创建权限组: " + param.权限组id);
         } else {
@@ -44,8 +67,7 @@ namespace BA::Command {
         .text("列出权限组节点")
         .required("权限组id")
         .execute([&](CommandOrigin const& origin, CommandOutput& output, 列出权限组节点 const& param, ::Command const&) {
-            auto& pm = BA::permission::PermissionManager::getInstance();
-            if (!pm.groupExists(param.权限组id)) {
+            if (!pm.groupExists(param.权限组id)) { 
                 output.error("权限组 '" + param.权限组id + "' 不存在。");
                 return;
             }
@@ -84,7 +106,7 @@ namespace BA::Command {
                 if (!player) continue; // 跳过无效的玩家指针
 
                 std::string uuidStr = player->getUuid().asString(); // 获取玩家 UUID 字符串
-                bool ok = BA::permission::PermissionManager::getInstance().addPlayerToGroup(uuidStr, param.权限组id);
+                bool ok = pm.addPlayerToGroup(uuidStr, param.权限组id);
                 if (ok) {
                     output.success("已将玩家加入权限组: " + param.权限组id);
                 } else {
@@ -107,7 +129,7 @@ namespace BA::Command {
                 const auto& playerInfo = playerInfoOpt.value();
                 std::string uuidStr = playerInfo.uuid.asString(); // 获取 UUID
 
-                bool ok = BA::permission::PermissionManager::getInstance().addPlayerToGroup(uuidStr, param.权限组id);
+                bool ok = pm.addPlayerToGroup(uuidStr, param.权限组id);
                 if (ok) {
                     output.success("已将玩家加入权限组: " + param.权限组id);
                 } else {
@@ -130,7 +152,7 @@ namespace BA::Command {
                 if (!player) continue; // 跳过无效的玩家指针
 
                 std::string uuidStr = player->getUuid().asString(); // 获取玩家 UUID 字符串
-                std::vector<std::string> groups = BA::permission::PermissionManager::getInstance().getPlayerGroups(uuidStr);
+                std::vector<std::string> groups = pm.getPlayerGroups(uuidStr);
                 if (groups.empty()) {
                     output.success(player->getRealName() + " 不属于任何权限组。");
                 } else {
@@ -158,7 +180,7 @@ namespace BA::Command {
                 }
                 const auto& playerInfo = playerInfoOpt.value();
                 std::string uuidStr = playerInfo.uuid.asString(); // 获取 UUID
-                std::vector<std::string> groups = BA::permission::PermissionManager::getInstance().getPlayerGroups(uuidStr);
+                std::vector<std::string> groups = pm.getPlayerGroups(uuidStr);
                 if (groups.empty()) {
                     output.success(playerInfo.name + " 不属于任何权限组。");
                 } else {
@@ -180,7 +202,6 @@ namespace BA::Command {
         .required("权限组id")
         .required("权限节点id")
         .execute([&](CommandOrigin const& origin, CommandOutput& output, 添加权限组节点 const& param, ::Command const&) {
-            auto& pm = BA::permission::PermissionManager::getInstance();
             // 直接尝试添加权限节点，依赖 addPermissionToGroup 内部的组存在性检查和缓存逻辑
             bool ok = pm.addPermissionToGroup(param.权限组id, param.权限节点id);
             if (ok) {
@@ -200,7 +221,6 @@ namespace BA::Command {
         .required("权限组id")
         .required("权限节点id")
         .execute([&](CommandOrigin const& origin, CommandOutput& output, 删除权限组节点 const& param, ::Command const&) {
-            auto& pm = BA::permission::PermissionManager::getInstance();
             if (!pm.groupExists(param.权限组id)) {
                 output.error("权限组 '" + param.权限组id + "' 不存在。");
                 return;
@@ -230,7 +250,7 @@ namespace BA::Command {
                 if (!player) continue; // 跳过无效的玩家指针
 
                 std::string uuidStr = player->getUuid().asString(); // 获取玩家 UUID 字符串
-                std::vector<BA::permission::CompiledPermissionRule> playerCompiledPermissions = BA::permission::PermissionManager::getInstance().getAllPermissionsForPlayer(uuidStr);
+                std::vector<BA::permission::CompiledPermissionRule> playerCompiledPermissions = pm.getAllPermissionsForPlayer(uuidStr);
                 std::vector<std::string> permissions;
                 for (const auto& rule : playerCompiledPermissions) {
                     if (rule.state) { // 只添加值为 true 的权限
@@ -293,13 +313,15 @@ namespace BA::Command {
         .text("删除权限组")
         .required("权限组id")
         .execute([&](CommandOrigin const& origin, CommandOutput& output, 删除权限组 const& param, ::Command const&) {
-            bool ok = BA::permission::PermissionManager::getInstance().deleteGroup(param.权限组id);
+            bool ok = pm.deleteGroup(param.权限组id); 
             if (ok) {
                 output.success("已删除权限组: " + param.权限组id);
             } else {
                 output.error("删除失败，权限组可能不存在");
             }
         });
+
+
 
         // 新增：注册权限节点命令
         cmd.overload<注册权限节点>()
@@ -308,7 +330,6 @@ namespace BA::Command {
         .optional("描述") // 将描述设为可选
         .optional("默认值") // 将默认值设为可选
         .execute([&](CommandOrigin const& origin, CommandOutput& output, 注册权限节点 const& param, ::Command const&) {
-            auto& pm = BA::permission::PermissionManager::getInstance();
             bool ok = pm.registerPermission(param.权限节点id, param.描述, param.默认值);
             if (ok) {
                 output.success("已注册权限节点: " + param.权限节点id);
@@ -329,9 +350,8 @@ namespace BA::Command {
                 output.error("没有选择到玩家");
                 return;
             }
-            auto& pm = BA::permission::PermissionManager::getInstance();
             // 检查权限组是否存在
-            if (!pm.groupExists(param.权限组id)) {
+            if (!pm.groupExists(param.权限组id)) { 
                  output.error("权限组 '" + param.权限组id + "' 不存在。");
                  return;
             }
@@ -340,7 +360,7 @@ namespace BA::Command {
                 if (!player) continue; // 跳过无效的玩家指针
 
                 std::string uuidStr = player->getUuid().asString(); // 获取玩家 UUID 字符串
-                bool ok = pm.removePlayerFromGroup(uuidStr, param.权限组id); // 调用 PermissionManager 的函数
+                bool ok = pm.removePlayerFromGroup(uuidStr, param.权限组id); 
                 if (ok) {
                     output.success("已将玩家 " + player->getRealName() + " 从权限组 '" + param.权限组id + "' 移除。");
                 } else {
@@ -348,7 +368,7 @@ namespace BA::Command {
                     std::vector<std::string> groups = pm.getPlayerGroups(uuidStr);
                     bool isInGroup = false;
                     for(const auto& group : groups) {
-                        if (group == param.权限组id) {
+                        if (group == param.权限组id) { 
                             isInGroup = true;
                             break;
                         }
@@ -377,14 +397,13 @@ namespace BA::Command {
             const auto& playerInfo = playerInfoOpt.value();
             std::string uuidStr = playerInfo.uuid.asString(); // 获取 UUID
 
-            auto& pm = BA::permission::PermissionManager::getInstance();
             // 检查权限组是否存在
             if (!pm.groupExists(param.权限组id)) {
                  output.error("权限组 '" + param.权限组id + "' 不存在。");
                  return;
             }
 
-                bool ok = pm.removePlayerFromGroup(uuidStr, param.权限组id); // 调用 PermissionManager 的函数
+                bool ok = pm.removePlayerFromGroup(uuidStr, param.权限组id);
                 if (ok) {
                     output.success("已将玩家 " + playerInfo.name + " 从权限组 '" + param.权限组id + "' 移除。");
                 } else {
@@ -414,7 +433,6 @@ namespace BA::Command {
         .required("子权限组id") // 第一个必需参数：子权限组ID
         .required("父权限组id") // 第二个必需参数：父权限组ID
         .execute([&](CommandOrigin const& origin, CommandOutput& output, 设置权限组继承 const& param, ::Command const&) {
-            auto& pm = BA::permission::PermissionManager::getInstance();
             // 检查子权限组是否存在
             if (!pm.groupExists(param.子权限组id)) {
                  output.error("子权限组 '" + param.子权限组id + "' 不存在。");
@@ -426,7 +444,7 @@ namespace BA::Command {
                  return;
             }
 
-            bool ok = pm.addGroupInheritance(param.子权限组id, param.父权限组id); // 调用 PermissionManager 的函数
+            bool ok = pm.addGroupInheritance(param.子权限组id, param.父权限组id);
             if (ok) {
                 output.success("已设置权限组 '" + param.子权限组id + "' 继承自 '" + param.父权限组id + "'。");
             } else {
@@ -441,7 +459,6 @@ namespace BA::Command {
         .required("子权限组id") // 子权限组ID
         .required("父权限组id") // 父权限组ID
         .execute([&](CommandOrigin const& origin, CommandOutput& output, 移除权限组继承 const& param, ::Command const&) {
-            auto& pm = BA::permission::PermissionManager::getInstance();
             // 检查子权限组是否存在（虽然移除时可能不需要，但保持一致性）
             if (!pm.groupExists(param.子权限组id)) {
                  output.error("子权限组 '" + param.子权限组id + "' 不存在。");
@@ -453,7 +470,7 @@ namespace BA::Command {
                  return;
             }
 
-            bool ok = pm.removeGroupInheritance(param.子权限组id, param.父权限组id); // 调用 PermissionManager 的函数
+            bool ok = pm.removeGroupInheritance(param.子权限组id, param.父权限组id);
             if (ok) {
                 output.success("已移除权限组 '" + param.子权限组id + "' 对 '" + param.父权限组id + "' 的继承关系。");
             } else {
