@@ -154,8 +154,11 @@ std::unordered_map<std::string, bool> PermissionStorage::fetchAllPermissionDefau
         if (row.size() >= 2 && !row[0].empty() && !row[1].empty()) {
             try {
                 defaults[row[0]] = (std::stoi(row[1]) != 0);
-            } catch (const std::exception&) {
-                // Log error or ignore
+            } catch (const std::exception& e) {
+                ::ll::mod::NativeMod::current()->getLogger().warn(
+                    "PermissionStorage: Failed to convert default_value '{}' for permission '{}' to int: {}",
+                    row[1], row[0], e.what()
+                );
             }
         }
     }
@@ -215,7 +218,11 @@ GroupDetails PermissionStorage::fetchGroupDetails(const std::string& groupName) 
         try {
             int priority = std::stoi(rows[0][3]);
             return GroupDetails(rows[0][0], rows[0][1], rows[0][2], priority);
-        } catch (const std::exception&) { /* Log or ignore */
+        } catch (const std::exception& e) {
+            ::ll::mod::NativeMod::current()->getLogger().warn(
+                "PermissionStorage: Failed to convert priority '{}' for group '{}' to int: {}",
+                rows[0][3], groupName, e.what()
+            );
         }
     }
     return {}; // Returns invalid GroupDetails
@@ -228,7 +235,11 @@ int PermissionStorage::fetchGroupPriority(const std::string& groupName) {
     if (rows.empty() || rows[0].empty()) return 0;
     try {
         return std::stoi(rows[0][0]);
-    } catch (const std::exception&) {
+    } catch (const std::exception& e) {
+        ::ll::mod::NativeMod::current()->getLogger().warn(
+            "PermissionStorage: Failed to convert priority '{}' for group '{}' to int: {}",
+            rows[0][0], groupName, e.what()
+        );
         return 0;
     }
 }
@@ -342,7 +353,11 @@ std::vector<GroupDetails> PermissionStorage::fetchPlayerGroupsWithDetails(const 
         if (row.size() >= 4) {
             try {
                 playerGroupDetails.emplace_back(row[0], row[1], row[2], std::stoi(row[3]));
-            } catch (const std::exception&) { /* Log or ignore */
+            } catch (const std::exception& e) {
+                ::ll::mod::NativeMod::current()->getLogger().warn(
+                    "PermissionStorage: Failed to convert priority '{}' for player group '{}' to int: {}",
+                    row[3], row[1], e.what()
+                );
             }
         }
     }
@@ -488,6 +503,20 @@ std::vector<std::string> PermissionStorage::fetchDirectParentGroupIds(const std:
     for (auto& row : rows)
         if (!row.empty()) parentIds.push_back(row[0]);
     return parentIds;
+}
+
+std::unordered_map<std::string, std::string> PermissionStorage::fetchGroupNamesByIds(const std::vector<std::string>& groupIds) {
+    if (!m_db || groupIds.empty()) return {};
+    std::unordered_map<std::string, std::string> groupNameMap;
+    std::string                        placeholders = m_db->getInClausePlaceholders(groupIds.size());
+    std::string                        sql          = "SELECT id, name FROM permission_groups WHERE id IN (" + placeholders + ");";
+    auto                          rows         = m_db->queryPrepared(sql, groupIds);
+    for (const auto& row : rows) {
+        if (row.size() >= 2 && !row[0].empty() && !row[1].empty()) {
+            groupNameMap[row[0]] = row[1];
+        }
+    }
+    return groupNameMap;
 }
 
 } // namespace internal

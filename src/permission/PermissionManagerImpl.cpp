@@ -377,15 +377,12 @@ std::vector<std::string> PermissionManager::PermissionManagerImpl::getDirectPare
     }
     // 从存储层获取直接父组的ID
     std::vector<std::string> parentGroupIds = m_storage->fetchDirectParentGroupIds(groupId);
-    // 将ID转换为组名
+    // 批量将ID转换为组名
+    std::unordered_map<std::string, std::string> idToNameMap = m_storage->fetchGroupNamesByIds(parentGroupIds);
     for (const auto& parentId : parentGroupIds) {
-        // 假设有一个从ID获取组名的方法，或者直接从缓存中查找
-        // 这里需要一个反向查找，或者在PermissionStorage中添加一个根据ID获取组名的方法
-        // 为了简化，我们暂时直接查询数据库，或者遍历m_groupNameCache
-        // 更好的方法是在PermissionCache中添加一个findGroupNameById方法
-        auto parentName = m_cache->findGroupName(parentId);
-        if (parentName) {
-            directParents.push_back(*parentName);
+        auto it = idToNameMap.find(parentId);
+        if (it != idToNameMap.end()) {
+            directParents.push_back(it->second);
         }
     }
     return directParents;

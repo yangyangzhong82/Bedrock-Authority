@@ -27,14 +27,14 @@ MySQLDatabase::MySQLDatabase(const std::string& host,
                               unsigned int port)
     : conn_(mysql_init(nullptr)) {
     auto& logger = ll::mod::NativeMod::current()->getLogger();
-    logger.info("正在初始化 MySQL 连接到 %s:%u 数据库=%s 用户=%s", host.c_str(), port, database.c_str(), user.c_str());
+    logger.info("正在初始化 MySQL 连接到 {}:{} 数据库={} 用户={}", host, port, database, user);
     if (conn_ == nullptr) {
         logger.error("初始化 MySQL 连接失败");
         throw std::runtime_error("初始化 MySQL 连接失败");
     }
     if (!mysql_real_connect(conn_, host.c_str(), user.c_str(), password.c_str(), database.c_str(), port, nullptr, 0)) {
         std::string err = mysql_error(conn_);
-        logger.error("连接到 MySQL 失败: %s", err.c_str());
+        logger.error("连接到 MySQL 失败: {}", err);
         mysql_close(conn_);
         throw std::runtime_error("连接到 MySQL 失败: " + err);
     }
@@ -100,7 +100,7 @@ std::vector<std::vector<std::string>> MySQLDatabase::query(const std::string& sq
         result.push_back(std::move(rowVec));
     }
     mysql_free_result(res);
-    logger.debug("MySQL 查询返回 %zu 行", result.size());
+    logger.debug("MySQL 查询返回 {} 行", result.size());
     return result;
 }
 
@@ -121,7 +121,7 @@ DatabaseType MySQLDatabase::getType() const {
 
 bool MySQLDatabase::executePrepared(const std::string& sql, const std::vector<std::string>& params) {
     auto& logger = ll::mod::NativeMod::current()->getLogger();
-    logger.debug("MySQL 执行预处理语句: %s", sql.c_str());
+    logger.debug("MySQL 执行预处理语句: {}", sql);
 
     MYSQL_STMT* stmt = mysql_stmt_init(conn_);
     if (!stmt) {
@@ -151,7 +151,7 @@ bool MySQLDatabase::executePrepared(const std::string& sql, const std::vector<st
     }
 
     if (mysql_stmt_bind_param(stmt, bind.data()) != 0) {
-        logger.error("MySQL mysql_stmt_bind_param 失败: %s", mysql_stmt_error(stmt));
+        logger.error("MySQL mysql_stmt_bind_param 失败: {}", mysql_stmt_error(stmt));
         mysql_stmt_close(stmt);
         return false;
     }
@@ -180,7 +180,7 @@ bool MySQLDatabase::executePrepared(const std::string& sql, const std::vector<st
 
 std::vector<std::vector<std::string>> MySQLDatabase::queryPrepared(const std::string& sql, const std::vector<std::string>& params) {
     auto& logger = ll::mod::NativeMod::current()->getLogger();
-    logger.debug("MySQL 查询预处理语句: %s", sql.c_str());
+    logger.debug("MySQL 查询预处理语句: {}", sql);
     std::vector<std::vector<std::string>> result;
 
     MYSQL_STMT* stmt = mysql_stmt_init(conn_);
@@ -191,7 +191,7 @@ std::vector<std::vector<std::string>> MySQLDatabase::queryPrepared(const std::st
 
     // 显式转换 sql.length() 为 unsigned long
     if (mysql_stmt_prepare(stmt, sql.c_str(), static_cast<unsigned long>(sql.length())) != 0) {
-        logger.error("MySQL mysql_stmt_prepare 失败: %s", mysql_stmt_error(stmt));
+        logger.error("MySQL mysql_stmt_prepare 失败: {}", mysql_stmt_error(stmt));
         mysql_stmt_close(stmt);
         return result;
     }
@@ -210,14 +210,14 @@ std::vector<std::vector<std::string>> MySQLDatabase::queryPrepared(const std::st
     }
 
     if (mysql_stmt_bind_param(stmt, param_bind.data()) != 0) {
-        logger.error("MySQL mysql_stmt_bind_param 失败: %s", mysql_stmt_error(stmt));
+        logger.error("MySQL mysql_stmt_bind_param 失败: {}", mysql_stmt_error(stmt));
         mysql_stmt_close(stmt);
         return result;
     }
 
     // 执行
     if (mysql_stmt_execute(stmt) != 0) {
-        logger.error("MySQL mysql_stmt_execute 失败: %s", mysql_stmt_error(stmt));
+        logger.error("MySQL mysql_stmt_execute 失败: {}", mysql_stmt_error(stmt));
         mysql_stmt_close(stmt);
         return result;
     }
@@ -228,7 +228,7 @@ std::vector<std::vector<std::string>> MySQLDatabase::queryPrepared(const std::st
         // 对于 INSERT/UPDATE/DELETE 等语句可能会发生这种情况
         // 检查是否有错误或只是没有结果集
         if (mysql_stmt_errno(stmt) != 0) {
-             logger.error("MySQL mysql_stmt_result_metadata 失败: %s", mysql_stmt_error(stmt));
+         logger.error("MySQL mysql_stmt_result_metadata 失败: {}", mysql_stmt_error(stmt));
         } else {
              logger.debug("MySQL queryPrepared 未返回结果集 (例如 INSERT/UPDATE)。");
         }
@@ -262,7 +262,7 @@ std::vector<std::vector<std::string>> MySQLDatabase::queryPrepared(const std::st
     }
 
     if (mysql_stmt_bind_result(stmt, result_bind.data()) != 0) {
-        logger.error("MySQL mysql_stmt_bind_result 失败: %s", mysql_stmt_error(stmt));
+        logger.error("MySQL mysql_stmt_bind_result 失败: {}", mysql_stmt_error(stmt));
         mysql_free_result(meta_result);
         mysql_stmt_close(stmt);
         return result;
@@ -270,7 +270,7 @@ std::vector<std::vector<std::string>> MySQLDatabase::queryPrepared(const std::st
 
     // 存储结果以允许获取
     if (mysql_stmt_store_result(stmt) != 0) {
-         logger.error("MySQL mysql_stmt_store_result 失败: %s", mysql_stmt_error(stmt));
+         logger.error("MySQL mysql_stmt_store_result 失败: {}", mysql_stmt_error(stmt));
          mysql_free_result(meta_result);
          mysql_stmt_close(stmt);
          return result;
@@ -295,7 +295,7 @@ std::vector<std::vector<std::string>> MySQLDatabase::queryPrepared(const std::st
                     result_bind[i].buffer_length = static_cast<unsigned long>(result_buffers[i].size());
 
                     if (mysql_stmt_fetch_column(stmt, &result_bind[i], i, 0) != 0) {
-                        logger.error("MySQL mysql_stmt_fetch_column 失败: %s", mysql_stmt_error(stmt));
+                        logger.error("MySQL mysql_stmt_fetch_column 失败: {}", mysql_stmt_error(stmt));
                         rowVec.emplace_back(""); // 发生错误时使用空字符串
                     } else {
                         rowVec.emplace_back(result_buffers[i].data(), result_lengths[i]);
@@ -310,13 +310,13 @@ std::vector<std::vector<std::string>> MySQLDatabase::queryPrepared(const std::st
 
     // 循环后检查获取错误
     if (mysql_stmt_errno(stmt) != 0 && mysql_stmt_errno(stmt) != MYSQL_NO_DATA) {
-        logger.error("MySQL mysql_stmt_fetch 失败: %s", mysql_stmt_error(stmt));
+        logger.error("MySQL mysql_stmt_fetch 失败: {}", mysql_stmt_error(stmt));
         // 结果可能部分填充
     }
 
     mysql_free_result(meta_result);
     mysql_stmt_close(stmt);
-    logger.debug("MySQL queryPrepared 返回 %zu 行", result.size());
+    logger.debug("MySQL queryPrepared 返回 {} 行", result.size());
     return result;
 }
 

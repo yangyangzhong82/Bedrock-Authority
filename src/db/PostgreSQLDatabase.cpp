@@ -36,14 +36,14 @@ PostgreSQLDatabase::PostgreSQLDatabase(const string& host,
                                        unsigned int port)
     : conn_(nullptr) {
     auto& logger = NativeMod::current()->getLogger();
-    logger.info("正在初始化 PostgreSQL 连接到 %s:%u 数据库=%s 用户=%s", host.c_str(), port, database.c_str(), user.c_str());
+    logger.info("正在初始化 PostgreSQL 连接到 {}:{} 数据库={} 用户={}", host, port, database, user);
 
     string conninfo = "host=" + host + " port=" + to_string(port) + " dbname=" + database + " user=" + user + " password=" + password;
     conn_ = PQconnectdb(conninfo.c_str());
 
     if (PQstatus(conn_) != CONNECTION_OK) {
         string err = PQerrorMessage(conn_);
-        logger.error("连接到 PostgreSQL 失败: %s", err.c_str());
+        logger.error("连接到 PostgreSQL 失败: {}", err);
         PQfinish(conn_);
         throw runtime_error("连接到 PostgreSQL 失败: " + err);
     }
