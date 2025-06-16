@@ -149,6 +149,14 @@ void PermissionManager::PermissionManagerImpl::populateAllCaches() {
     // 组权限缓存由 getPermissionsOfGroup 按需填充
     // 玩家权限和组缓存也是按需填充
 
+    // 预热组权限缓存
+    for (const auto& pair : m_cache->getAllGroups()) {
+        const std::string& groupName = pair.first;
+        // 调用 getPermissionsOfGroup 会自动填充 m_groupPermissionsCache
+        getPermissionsOfGroup(groupName);
+        logger.debug("已预热组 '{}' 的权限缓存。", groupName);
+    }
+
     logger.info("权限缓存预热完成。");
 }
 
