@@ -93,8 +93,12 @@ bool PermissionManager::removeGroupInheritance(const std::string& groupName, con
     return m_pimpl->removeGroupInheritance(groupName, parentGroupName);
 }
 
-std::vector<std::string> PermissionManager::getParentGroups(const std::string& groupName) {
-    return m_pimpl->getParentGroups(groupName);
+std::vector<std::string> PermissionManager::getAllAncestorGroups(const std::string& groupName) {
+    return m_pimpl->getAllAncestorGroups(groupName);
+}
+
+std::vector<std::string> PermissionManager::getDirectParentGroups(const std::string& groupName) {
+    return m_pimpl->getDirectParentGroups(groupName);
 }
 
 bool PermissionManager::setGroupPriority(const std::string& groupName, int priority) {

@@ -17,6 +17,7 @@ public:
     void                       storeGroup(const std::string& groupName, const std::string& groupId);
     void                       invalidateGroup(const std::string& groupName);
     void                       populateAllGroups(std::unordered_map<std::string, std::string>&& groupNameMap);
+    const std::unordered_map<std::string, std::string>& getAllGroups() const;
 
     // Player Permissions Cache
     std::optional<std::vector<CompiledPermissionRule>> findPlayerPermissions(const std::string& playerUuid);
@@ -39,6 +40,7 @@ public:
     std::optional<bool> findPermissionDefault(const std::string& permissionName);
     void                storePermissionDefault(const std::string& permissionName, bool defaultValue);
     void                populateAllPermissionDefaults(std::unordered_map<std::string, bool>&& defaultsMap);
+    const std::unordered_map<std::string, bool>& getAllPermissionDefaults() const;
 
     // Inheritance Cache
     void populateInheritance(

@@ -61,7 +61,8 @@ public:
     // --- 组继承 ---
     bool                     addGroupInheritance(const std::string& groupName, const std::string& parentGroupName);
     bool                     removeGroupInheritance(const std::string& groupName, const std::string& parentGroupName);
-    std::vector<std::string> getParentGroups(const std::string& groupName);
+    std::vector<std::string> getAllAncestorGroups(const std::string& groupName);
+    std::vector<std::string> getDirectParentGroups(const std::string& groupName);
 
     // --- 组优先级 ---
     bool setGroupPriority(const std::string& groupName, int priority);

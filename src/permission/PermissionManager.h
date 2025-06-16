@@ -47,7 +47,8 @@ public:
     // --- Group Inheritance ---
     BA_API bool addGroupInheritance(const std::string& groupName, const std::string& parentGroupName);
     BA_API bool removeGroupInheritance(const std::string& groupName, const std::string& parentGroupName);
-    BA_API std::vector<std::string> getParentGroups(const std::string& groupName);
+    BA_API std::vector<std::string> getAllAncestorGroups(const std::string& groupName);
+    BA_API std::vector<std::string> getDirectParentGroups(const std::string& groupName);
 
     // --- Group Priority ---
     BA_API bool setGroupPriority(const std::string& groupName, int priority);

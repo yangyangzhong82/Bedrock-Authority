@@ -88,16 +88,13 @@ void PermissionManager::PermissionManagerImpl::populateAllCaches() {
     logger.info("Warming up permission caches...");
 
     // Populate Group Name -> ID cache
-    vector<string>                groupNames = m_storage->fetchAllGroupNames();
-    unordered_map<string, string> groupNameMap;
-    for (const auto& name : groupNames) {
-        string id = m_storage->fetchGroupIdByName(name);
-        if (!id.empty()) {
-            groupNameMap[name] = id;
-        }
-    }
+    std::vector<std::string> groupNamesVec = m_storage->fetchAllGroupNames();
+    std::set<std::string> groupNamesSet(groupNamesVec.begin(), groupNamesVec.end()); // Convert vector to set
+    
+    // Use bulk fetch to get all group names and their IDs
+    std::unordered_map<std::string, std::string> groupNameMap = m_storage->fetchGroupIdsByNames(groupNamesSet);
     m_cache->populateAllGroups(std::move(groupNameMap));
-    logger.debug("Populated group name cache with {} entries.", groupNames.size());
+    logger.debug("Populated group name cache with {} entries.", groupNameMap.size()); // Use map size for accuracy
 
     // Populate Inheritance cache
     auto                               parentToChildren = m_storage->fetchAllInheritance();
@@ -182,16 +179,14 @@ bool PermissionManager::PermissionManagerImpl::deleteGroup(const std::string& gr
         return false;
     }
 
-    // Invalidate caches before deleting from DB
-    m_cache->invalidateGroup(groupName);
     // Invalidate all inheritance related to this group
     auto parents  = m_cache->getAllAncestorGroups(groupName);
     auto children = m_cache->getChildGroupsRecursive(groupName);
 
     if (m_storage->deleteGroup(groupId)) {
+        // Invalidate caches after deleting from DB
+        m_cache->invalidateGroup(groupName);
         // Enqueue invalidation for all related groups and their players
-        for (const auto& parent : parents)
-            m_invalidator->enqueueTask({CacheInvalidationTaskType::GROUP_MODIFIED, parent});
         for (const auto& child : children)
             m_invalidator->enqueueTask({CacheInvalidationTaskType::GROUP_MODIFIED, child});
         return true;
@@ -368,21 +363,36 @@ bool PermissionManager::PermissionManagerImpl::removeGroupInheritance(
     return false;
 }
 
-std::vector<std::string> PermissionManager::PermissionManagerImpl::getParentGroups(const std::string& groupName) {
+std::vector<std::string> PermissionManager::PermissionManagerImpl::getAllAncestorGroups(const std::string& groupName) {
     auto ancestors = m_cache->getAllAncestorGroups(groupName);
-    ancestors.erase(groupName); // Remove self
-    vector<string> parents;
-    for (const auto& p : ancestors) {
-        // This gets all ancestors, not just direct parents. To get only direct parents, a different cache structure
-        // would be better. For now, let's assume this is the intended behavior.
+    ancestors.erase(groupName); // 移除自身
+    return std::vector<std::string>(ancestors.begin(), ancestors.end());
+}
+
+std::vector<std::string> PermissionManager::PermissionManagerImpl::getDirectParentGroups(const std::string& groupName) {
+    std::vector<std::string> directParents;
+    std::string              groupId = getCachedGroupId(groupName);
+    if (groupId.empty()) {
+        return directParents;
     }
-    // To get just direct parents from current cache:
-    auto allAncestors = m_cache->getAllAncestorGroups(groupName); // this is inefficient
-    allAncestors.erase(groupName);
-    return vector<string>(
-        allAncestors.begin(),
-        allAncestors.end()
-    ); // Simplified for now. A more precise method is needed.
+    // 从存储层获取直接父组的ID
+    std::vector<std::string> parentGroupIds = m_storage->fetchDirectParentGroupIds(groupId);
+    // 将ID转换为组名
+    for (const auto& parentId : parentGroupIds) {
+        // 假设有一个从ID获取组名的方法，或者直接从缓存中查找
+        // 这里需要一个反向查找，或者在PermissionStorage中添加一个根据ID获取组名的方法
+        // 为了简化，我们暂时直接查询数据库，或者遍历m_groupNameCache
+        // 更好的方法是在PermissionCache中添加一个findGroupNameById方法
+        // 暂时通过遍历m_cache->m_groupNameCache来实现
+        auto cachedGroups = m_cache->getAllGroups(); // 获取所有缓存的组名到ID的映射
+        for (const auto& pair : cachedGroups) {
+            if (pair.second == parentId) {
+                directParents.push_back(pair.first);
+                break;
+            }
+        }
+    }
+    return directParents;
 }
 
 bool PermissionManager::PermissionManagerImpl::setGroupPriority(const std::string& groupName, int priority) {
@@ -464,7 +474,12 @@ PermissionManager::PermissionManagerImpl::getAllPermissionsForPlayer(const std::
     // Calculation logic
     map<string, bool> effectiveState;
     // 1. Add default permissions
-    auto defaults = m_storage->fetchAllPermissionDefaults(); // Should be cached
+    // 尝试从缓存获取默认权限，如果未命中则从存储层获取并填充缓存
+    auto defaults = m_cache->getAllPermissionDefaults(); // 使用公共方法获取缓存
+    if (defaults.empty()) { // 如果缓存为空，则从存储层加载
+        m_cache->populateAllPermissionDefaults(m_storage->fetchAllPermissionDefaults());
+        defaults = m_cache->getAllPermissionDefaults(); // 重新获取填充后的缓存
+    }
     for (const auto& [name, state] : defaults) {
         if (state) {
             effectiveState[name] = true;

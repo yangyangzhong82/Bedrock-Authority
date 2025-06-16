@@ -391,20 +391,41 @@ void HttpServer::setupRoutes() {
         {drogon::HttpMethod::Delete}
     );
 
-    // 获取组的父组
+    // 获取组的所有祖先组
     drogon::app().registerHandler(
-        "/api/groups/{groupName}/parents",
+        "/api/groups/{groupName}/ancestors",
         [this](
             const drogon::HttpRequestPtr&                         req,
             std::function<void(const drogon::HttpResponsePtr&)>&& callback,
             const std::string&                                    groupName
         ) {
             auto        resp         = drogon::HttpResponse::newHttpResponse();
-            auto        parentGroups = mPermissionManager.getParentGroups(groupName);
+            auto        ancestorGroups = mPermissionManager.getAllAncestorGroups(groupName);
             Json::Value data;
-            data["parents"].resize(0);
-            for (const auto& parent : parentGroups) {
-                data["parents"].append(parent);
+            data["ancestors"].resize(0);
+            for (const auto& ancestor : ancestorGroups) {
+                data["ancestors"].append(ancestor);
+            }
+            sendJsonResponse(resp, data);
+            callback(resp);
+        },
+        {drogon::HttpMethod::Get}
+    );
+
+    // 获取组的直接父组
+    drogon::app().registerHandler(
+        "/api/groups/{groupName}/direct-parents",
+        [this](
+            const drogon::HttpRequestPtr&                         req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+            const std::string&                                    groupName
+        ) {
+            auto        resp         = drogon::HttpResponse::newHttpResponse();
+            auto        directParentGroups = mPermissionManager.getDirectParentGroups(groupName);
+            Json::Value data;
+            data["directParents"].resize(0);
+            for (const auto& parent : directParentGroups) {
+                data["directParents"].append(parent);
             }
             sendJsonResponse(resp, data);
             callback(resp);

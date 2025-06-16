@@ -54,6 +54,9 @@ public:
     virtual std::string getInsertOrIgnoreSql(const std::string& tableName, const std::string& columns, const std::string& values, const std::string& conflictColumns) const = 0;
     // 新增：获取自增主键的数据库方言定义
     virtual std::string getAutoIncrementPrimaryKeyDefinition() const = 0;
+
+    // 新增：获取 IN 子句的占位符字符串 (例如：?, ?, ?)
+    virtual std::string getInClausePlaceholders(size_t count) const = 0;
 };
 
 } // namespace db

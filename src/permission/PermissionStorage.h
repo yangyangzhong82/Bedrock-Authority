@@ -50,12 +50,16 @@ public:
     bool addGroupInheritance(const std::string& groupId, const std::string& parentGroupId);
     bool removeGroupInheritance(const std::string& groupId, const std::string& parentGroupId);
     std::unordered_map<std::string, std::set<std::string>> fetchAllInheritance();
+    std::vector<std::string> fetchDirectParentGroupIds(const std::string& groupId);
 
     // Player Groups
     bool                      addPlayerToGroup(const std::string& playerUuid, const std::string& groupId);
     bool                      removePlayerFromGroup(const std::string& playerUuid, const std::string& groupId);
     std::vector<GroupDetails> fetchPlayerGroupsWithDetails(const std::string& playerUuid);
     std::vector<std::string>  fetchPlayersInGroup(const std::string& groupId);
+    std::vector<std::string>  fetchPlayersInGroups(const std::vector<std::string>& groupIds); // New: Fetch players in multiple groups
+    std::unordered_map<std::string, std::string> fetchGroupIdsByNames(const std::set<std::string>& groupNames); // New: Fetch group IDs by names
+
     size_t                    addPlayerToGroups(
                            const std::string&                                      playerUuid,
                            const std::vector<std::pair<std::string, std::string>>& groupInfos

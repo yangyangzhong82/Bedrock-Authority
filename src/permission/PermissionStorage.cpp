@@ -7,7 +7,8 @@ namespace BA {
 namespace permission {
 namespace internal {
 
-using namespace std;
+// Removed 'using namespace std;' to explicitly qualify standard library types.
+// using namespace std;
 
 PermissionStorage::PermissionStorage(db::IDatabase* db) : m_db(db) {}
 
@@ -15,7 +16,7 @@ bool PermissionStorage::ensureTables() {
     auto& logger = ::ll::mod::NativeMod::current()->getLogger();
     logger.debug("Storage: Ensuring database tables exist...");
 
-    auto executeAndLog = [&](const string& sql, const string& description) {
+    auto executeAndLog = [&](const std::string& sql, const std::string& description) {
         if (!m_db) return false;
         bool success = m_db->execute(sql);
         logger.debug(
@@ -57,20 +58,34 @@ bool PermissionStorage::ensureTables() {
     );
 
     executeAndLog(
-        "CREATE TABLE IF NOT EXISTS group_permissions (group_id INT NOT NULL, permission_rule VARCHAR(255) NOT NULL, "
-        "PRIMARY KEY (group_id, permission_rule), FOREIGN KEY (group_id) REFERENCES permission_groups(id) ON DELETE "
-        "CASCADE);",
+        m_db->getCreateTableSql(
+            "group_permissions",
+            "group_id INT NOT NULL, "
+            "permission_rule VARCHAR(255) NOT NULL, "
+            "PRIMARY KEY (group_id, permission_rule), "
+            "FOREIGN KEY (group_id) REFERENCES permission_groups(id) ON DELETE CASCADE"
+        ),
         "Create group_permissions table"
     );
     executeAndLog(
-        "CREATE TABLE IF NOT EXISTS group_inheritance (group_id INT NOT NULL, parent_group_id INT NOT NULL, PRIMARY "
-        "KEY (group_id, parent_group_id), FOREIGN KEY (group_id) REFERENCES permission_groups(id) ON DELETE CASCADE, "
-        "FOREIGN KEY (parent_group_id) REFERENCES permission_groups(id) ON DELETE CASCADE);",
+        m_db->getCreateTableSql(
+            "group_inheritance",
+            "group_id INT NOT NULL, "
+            "parent_group_id INT NOT NULL, "
+            "PRIMARY KEY (group_id, parent_group_id), "
+            "FOREIGN KEY (group_id) REFERENCES permission_groups(id) ON DELETE CASCADE, "
+            "FOREIGN KEY (parent_group_id) REFERENCES permission_groups(id) ON DELETE CASCADE"
+        ),
         "Create group_inheritance table"
     );
     executeAndLog(
-        "CREATE TABLE IF NOT EXISTS player_groups (player_uuid VARCHAR(36) NOT NULL, group_id INT NOT NULL, PRIMARY "
-        "KEY (player_uuid, group_id), FOREIGN KEY (group_id) REFERENCES permission_groups(id) ON DELETE CASCADE);",
+        m_db->getCreateTableSql(
+            "player_groups",
+            "player_uuid VARCHAR(36) NOT NULL, "
+            "group_id INT NOT NULL, "
+            "PRIMARY KEY (player_uuid, group_id), "
+            "FOREIGN KEY (group_id) REFERENCES permission_groups(id) ON DELETE CASCADE"
+        ),
         "Create player_groups table"
     );
 
@@ -95,25 +110,25 @@ bool PermissionStorage::ensureTables() {
 // --- Permissions ---
 bool PermissionStorage::upsertPermission(const std::string& name, const std::string& description, bool defaultValue) {
     if (!m_db) return false;
-    string defaultValueStr = defaultValue ? "1" : "0";
-    string insertSql = m_db->getInsertOrIgnoreSql("permissions", "name, description, default_value", "?, ?, ?", "name");
+    std::string defaultValueStr = defaultValue ? "1" : "0";
+    std::string insertSql = m_db->getInsertOrIgnoreSql("permissions", "name, description, default_value", "?, ?, ?", "name");
     if (!m_db->executePrepared(insertSql, {name, description, defaultValueStr})) {
         return false;
     }
-    string updateSql = "UPDATE permissions SET description = ?, default_value = ? WHERE name = ?;";
+    std::string updateSql = "UPDATE permissions SET description = ?, default_value = ? WHERE name = ?;";
     return m_db->executePrepared(updateSql, {description, defaultValueStr, name});
 }
 
 bool PermissionStorage::permissionExists(const std::string& name) {
     if (!m_db) return false;
-    string sql = "SELECT 1 FROM permissions WHERE name = ? LIMIT 1;";
+    std::string sql = "SELECT 1 FROM permissions WHERE name = ? LIMIT 1;";
     return !m_db->queryPrepared(sql, {name}).empty();
 }
 
 std::vector<std::string> PermissionStorage::fetchAllPermissionNames() {
     if (!m_db) return {};
-    vector<string> list;
-    string         sql  = "SELECT name FROM permissions;";
+    std::vector<std::string> list;
+    std::string         sql  = "SELECT name FROM permissions;";
     auto           rows = m_db->queryPrepared(sql, {});
     for (auto& row : rows)
         if (!row.empty()) list.push_back(row[0]);
@@ -122,8 +137,8 @@ std::vector<std::string> PermissionStorage::fetchAllPermissionNames() {
 
 std::vector<std::string> PermissionStorage::fetchDefaultPermissionNames() {
     if (!m_db) return {};
-    vector<string> list;
-    string         sql  = "SELECT name FROM permissions WHERE default_value = 1;";
+    std::vector<std::string> list;
+    std::string         sql  = "SELECT name FROM permissions WHERE default_value = 1;";
     auto           rows = m_db->queryPrepared(sql, {});
     for (const auto& row : rows)
         if (!row.empty()) list.push_back(row[0]);
@@ -132,8 +147,8 @@ std::vector<std::string> PermissionStorage::fetchDefaultPermissionNames() {
 
 std::unordered_map<std::string, bool> PermissionStorage::fetchAllPermissionDefaults() {
     if (!m_db) return {};
-    unordered_map<string, bool> defaults;
-    string                      sql  = "SELECT name, default_value FROM permissions;";
+    std::unordered_map<std::string, bool> defaults;
+    std::string                      sql  = "SELECT name, default_value FROM permissions;";
     auto                        rows = m_db->queryPrepared(sql, {});
     for (const auto& row : rows) {
         if (row.size() >= 2 && !row[0].empty() && !row[1].empty()) {
@@ -154,7 +169,7 @@ bool PermissionStorage::createGroup(
     std::string&       outGroupId
 ) {
     if (!m_db) return false;
-    string insertSql = m_db->getInsertOrIgnoreSql("permission_groups", "name, description", "?, ?", "name");
+    std::string insertSql = m_db->getInsertOrIgnoreSql("permission_groups", "name, description", "?, ?", "name");
     m_db->executePrepared(insertSql, {groupName, description}); // Ignore result, just attempt.
     outGroupId = fetchGroupIdByName(groupName);
     return !outGroupId.empty();
@@ -163,13 +178,13 @@ bool PermissionStorage::createGroup(
 bool PermissionStorage::deleteGroup(const std::string& groupId) {
     if (!m_db) return false;
     // ON DELETE CASCADE in FKs will handle related table cleanups.
-    string sql = "DELETE FROM permission_groups WHERE id = ?;";
+    std::string sql = "DELETE FROM permission_groups WHERE id = ?;";
     return m_db->executePrepared(sql, {groupId});
 }
 
 std::string PermissionStorage::fetchGroupIdByName(const std::string& groupName) {
     if (!m_db) return "";
-    string sql  = "SELECT id FROM permission_groups WHERE name = ? LIMIT 1;";
+    std::string sql  = "SELECT id FROM permission_groups WHERE name = ? LIMIT 1;";
     auto   rows = m_db->queryPrepared(sql, {groupName});
     if (rows.empty() || rows[0].empty()) return "";
     return rows[0][0];
@@ -177,8 +192,8 @@ std::string PermissionStorage::fetchGroupIdByName(const std::string& groupName) 
 
 std::vector<std::string> PermissionStorage::fetchAllGroupNames() {
     if (!m_db) return {};
-    vector<string> list;
-    string         sql  = "SELECT name FROM permission_groups;";
+    std::vector<std::string> list;
+    std::string         sql  = "SELECT name FROM permission_groups;";
     auto           rows = m_db->queryPrepared(sql, {});
     for (auto& row : rows)
         if (!row.empty()) list.push_back(row[0]);
@@ -187,18 +202,18 @@ std::vector<std::string> PermissionStorage::fetchAllGroupNames() {
 
 bool PermissionStorage::groupExists(const std::string& groupName) {
     if (!m_db) return false;
-    string sql = "SELECT 1 FROM permission_groups WHERE name = ? LIMIT 1;";
+    std::string sql = "SELECT 1 FROM permission_groups WHERE name = ? LIMIT 1;";
     return !m_db->queryPrepared(sql, {groupName}).empty();
 }
 
 GroupDetails PermissionStorage::fetchGroupDetails(const std::string& groupName) {
     if (!m_db) return {};
-    string sql  = "SELECT id, name, description, priority FROM permission_groups WHERE name = ? LIMIT 1;";
+    std::string sql  = "SELECT id, name, description, priority FROM permission_groups WHERE name = ? LIMIT 1;";
     auto   rows = m_db->queryPrepared(sql, {groupName});
 
     if (!rows.empty() && rows[0].size() >= 4) {
         try {
-            int priority = stoi(rows[0][3]);
+            int priority = std::stoi(rows[0][3]);
             return GroupDetails(rows[0][0], rows[0][1], rows[0][2], priority);
         } catch (const std::exception&) { /* Log or ignore */
         }
@@ -208,11 +223,11 @@ GroupDetails PermissionStorage::fetchGroupDetails(const std::string& groupName) 
 
 int PermissionStorage::fetchGroupPriority(const std::string& groupName) {
     if (!m_db) return 0;
-    string sql  = "SELECT priority FROM permission_groups WHERE name = ? LIMIT 1;";
+    std::string sql  = "SELECT priority FROM permission_groups WHERE name = ? LIMIT 1;";
     auto   rows = m_db->queryPrepared(sql, {groupName});
     if (rows.empty() || rows[0].empty()) return 0;
     try {
-        return stoi(rows[0][0]);
+        return std::stoi(rows[0][0]);
     } catch (const std::exception&) {
         return 0;
     }
@@ -220,19 +235,19 @@ int PermissionStorage::fetchGroupPriority(const std::string& groupName) {
 
 bool PermissionStorage::updateGroupPriority(const std::string& groupName, int priority) {
     if (!m_db) return false;
-    string sql = "UPDATE permission_groups SET priority = ? WHERE name = ?;";
-    return m_db->executePrepared(sql, {to_string(priority), groupName});
+    std::string sql = "UPDATE permission_groups SET priority = ? WHERE name = ?;";
+    return m_db->executePrepared(sql, {std::to_string(priority), groupName});
 }
 
-bool PermissionStorage::updateGroupDescription(const string& groupName, const string& newDescription) {
+bool PermissionStorage::updateGroupDescription(const std::string& groupName, const std::string& newDescription) {
     if (!m_db) return false;
-    string sql = "UPDATE permission_groups SET description = ? WHERE name = ?;";
+    std::string sql = "UPDATE permission_groups SET description = ? WHERE name = ?;";
     return m_db->executePrepared(sql, {newDescription, groupName});
 }
 
-string PermissionStorage::fetchGroupDescription(const string& groupName) {
+std::string PermissionStorage::fetchGroupDescription(const std::string& groupName) {
     if (!m_db) return "";
-    string sql  = "SELECT description FROM permission_groups WHERE name = ? LIMIT 1;";
+    std::string sql  = "SELECT description FROM permission_groups WHERE name = ? LIMIT 1;";
     auto   rows = m_db->queryPrepared(sql, {groupName});
     if (rows.empty() || rows[0].empty()) return "";
     return rows[0][0];
@@ -241,7 +256,7 @@ string PermissionStorage::fetchGroupDescription(const string& groupName) {
 // --- Group Permissions ---
 bool PermissionStorage::addPermissionToGroup(const std::string& groupId, const std::string& permissionRule) {
     if (!m_db) return false;
-    string insertSql = m_db->getInsertOrIgnoreSql(
+    std::string insertSql = m_db->getInsertOrIgnoreSql(
         "group_permissions",
         "group_id, permission_rule",
         "?, ?",
@@ -252,14 +267,14 @@ bool PermissionStorage::addPermissionToGroup(const std::string& groupId, const s
 
 bool PermissionStorage::removePermissionFromGroup(const std::string& groupId, const std::string& permissionRule) {
     if (!m_db) return false;
-    string sql = "DELETE FROM group_permissions WHERE group_id = ? AND permission_rule = ?;";
+    std::string sql = "DELETE FROM group_permissions WHERE group_id = ? AND permission_rule = ?;";
     return m_db->executePrepared(sql, {groupId, permissionRule});
 }
 
 std::vector<std::string> PermissionStorage::fetchDirectPermissionsOfGroup(const std::string& groupId) {
     if (!m_db) return {};
-    vector<string> perms;
-    string         sql  = "SELECT permission_rule FROM group_permissions WHERE group_id = ?;";
+    std::vector<std::string> perms;
+    std::string         sql  = "SELECT permission_rule FROM group_permissions WHERE group_id = ?;";
     auto           rows = m_db->queryPrepared(sql, {groupId});
     for (auto& row : rows)
         if (!row.empty()) perms.push_back(row[0]);
@@ -269,7 +284,7 @@ std::vector<std::string> PermissionStorage::fetchDirectPermissionsOfGroup(const 
 // --- Inheritance ---
 bool PermissionStorage::addGroupInheritance(const std::string& groupId, const std::string& parentGroupId) {
     if (!m_db) return false;
-    string insertSql = m_db->getInsertOrIgnoreSql(
+    std::string insertSql = m_db->getInsertOrIgnoreSql(
         "group_inheritance",
         "group_id, parent_group_id",
         "?, ?",
@@ -280,14 +295,14 @@ bool PermissionStorage::addGroupInheritance(const std::string& groupId, const st
 
 bool PermissionStorage::removeGroupInheritance(const std::string& groupId, const std::string& parentGroupId) {
     if (!m_db) return false;
-    string sql = "DELETE FROM group_inheritance WHERE group_id = ? AND parent_group_id = ?;";
+    std::string sql = "DELETE FROM group_inheritance WHERE group_id = ? AND parent_group_id = ?;";
     return m_db->executePrepared(sql, {groupId, parentGroupId});
 }
 
 std::unordered_map<std::string, std::set<std::string>> PermissionStorage::fetchAllInheritance() {
     if (!m_db) return {};
-    unordered_map<string, set<string>> parentToChildren;
-    string                             sql  = "SELECT T1.name AS child_name, T2.name AS parent_name "
+    std::unordered_map<std::string, std::set<std::string>> parentToChildren;
+    std::string                             sql  = "SELECT T1.name AS child_name, T2.name AS parent_name "
                                               "FROM group_inheritance gi "
                                               "JOIN permission_groups T1 ON gi.group_id = T1.id "
                                               "JOIN permission_groups T2 ON gi.parent_group_id = T2.id;";
@@ -304,14 +319,14 @@ std::unordered_map<std::string, std::set<std::string>> PermissionStorage::fetchA
 // --- Player Groups ---
 bool PermissionStorage::addPlayerToGroup(const std::string& playerUuid, const std::string& groupId) {
     if (!m_db) return false;
-    string insertSql =
+    std::string insertSql =
         m_db->getInsertOrIgnoreSql("player_groups", "player_uuid, group_id", "?, ?", "player_uuid, group_id");
     return m_db->executePrepared(insertSql, {playerUuid, groupId});
 }
 
 bool PermissionStorage::removePlayerFromGroup(const std::string& playerUuid, const std::string& groupId) {
     if (!m_db) return false;
-    string sql = "DELETE FROM player_groups WHERE player_uuid = ? AND group_id = ?;";
+    std::string sql = "DELETE FROM player_groups WHERE player_uuid = ? AND group_id = ?;";
     return m_db->executePrepared(sql, {playerUuid, groupId});
 }
 
@@ -326,7 +341,7 @@ std::vector<GroupDetails> PermissionStorage::fetchPlayerGroupsWithDetails(const 
     for (const auto& row : rows) {
         if (row.size() >= 4) {
             try {
-                playerGroupDetails.emplace_back(row[0], row[1], row[2], stoi(row[3]));
+                playerGroupDetails.emplace_back(row[0], row[1], row[2], std::stoi(row[3]));
             } catch (const std::exception&) { /* Log or ignore */
             }
         }
@@ -336,12 +351,38 @@ std::vector<GroupDetails> PermissionStorage::fetchPlayerGroupsWithDetails(const 
 
 std::vector<std::string> PermissionStorage::fetchPlayersInGroup(const std::string& groupId) {
     if (!m_db) return {};
-    vector<string> players;
-    string         sql  = "SELECT player_uuid FROM player_groups WHERE group_id = ?;";
+    std::vector<std::string> players;
+    std::string         sql  = "SELECT player_uuid FROM player_groups WHERE group_id = ?;";
     auto           rows = m_db->queryPrepared(sql, {groupId});
     for (auto& row : rows)
         if (!row.empty()) players.push_back(row[0]);
     return players;
+}
+
+std::vector<std::string> PermissionStorage::fetchPlayersInGroups(const std::vector<std::string>& groupIds) {
+    if (!m_db || groupIds.empty()) return {};
+    std::vector<std::string> players;
+    std::string         placeholders = m_db->getInClausePlaceholders(groupIds.size());
+    std::string         sql          = "SELECT DISTINCT player_uuid FROM player_groups WHERE group_id IN (" + placeholders + ");";
+    auto           rows         = m_db->queryPrepared(sql, groupIds);
+    for (auto& row : rows)
+        if (!row.empty()) players.push_back(row[0]);
+    return players;
+}
+
+std::unordered_map<std::string, std::string> PermissionStorage::fetchGroupIdsByNames(const std::set<std::string>& groupNames) {
+    if (!m_db || groupNames.empty()) return {};
+    std::unordered_map<std::string, std::string> groupNameMap;
+    std::vector<std::string>                namesVec(groupNames.begin(), groupNames.end());
+    std::string                        placeholders = m_db->getInClausePlaceholders(namesVec.size());
+    std::string                        sql          = "SELECT name, id FROM permission_groups WHERE name IN (" + placeholders + ");";
+    auto                          rows         = m_db->queryPrepared(sql, namesVec);
+    for (const auto& row : rows) {
+        if (row.size() >= 2 && !row[0].empty() && !row[1].empty()) {
+            groupNameMap[row[0]] = row[1];
+        }
+    }
+    return groupNameMap;
 }
 
 // --- Bulk Operations ---
@@ -351,7 +392,7 @@ PermissionStorage::addPermissionsToGroup(const std::string& groupId, const std::
     if (!m_db->beginTransaction()) return 0;
 
     size_t successCount = 0;
-    string insertSql    = m_db->getInsertOrIgnoreSql(
+    std::string insertSql    = m_db->getInsertOrIgnoreSql(
         "group_permissions",
         "group_id, permission_rule",
         "?, ?",
@@ -380,7 +421,7 @@ size_t PermissionStorage::removePermissionsFromGroup(
     if (!m_db->beginTransaction()) return 0;
 
     size_t successCount = 0;
-    string deleteSql    = "DELETE FROM group_permissions WHERE group_id = ? AND permission_rule = ?;";
+    std::string deleteSql    = "DELETE FROM group_permissions WHERE group_id = ? AND permission_rule = ?;";
 
     for (const auto& rule : permissionRules) {
         if (rule.empty() || rule == "-") continue;
@@ -396,12 +437,12 @@ size_t PermissionStorage::removePermissionsFromGroup(
     return successCount;
 }
 
-size_t PermissionStorage::addPlayerToGroups(const string& playerUuid, const vector<pair<string, string>>& groupInfos) {
+size_t PermissionStorage::addPlayerToGroups(const std::string& playerUuid, const std::vector<std::pair<std::string, std::string>>& groupInfos) {
     if (!m_db || groupInfos.empty()) return 0;
     if (!m_db->beginTransaction()) return 0;
 
     size_t successCount = 0;
-    string insertSql =
+    std::string insertSql =
         m_db->getInsertOrIgnoreSql("player_groups", "player_uuid, group_id", "?, ?", "player_uuid, group_id");
 
     for (const auto& groupInfo : groupInfos) {
@@ -424,7 +465,7 @@ PermissionStorage::removePlayerFromGroups(const std::string& playerUuid, const s
     if (!m_db->beginTransaction()) return 0;
 
     size_t successCount = 0;
-    string deleteSql    = "DELETE FROM player_groups WHERE player_uuid = ? AND group_id = ?;";
+    std::string deleteSql    = "DELETE FROM player_groups WHERE player_uuid = ? AND group_id = ?;";
 
     for (const auto& groupId : groupIds) {
         if (m_db->executePrepared(deleteSql, {playerUuid, groupId})) {
@@ -437,6 +478,16 @@ PermissionStorage::removePlayerFromGroups(const std::string& playerUuid, const s
         return 0;
     }
     return successCount;
+}
+
+std::vector<std::string> PermissionStorage::fetchDirectParentGroupIds(const std::string& groupId) {
+    if (!m_db) return {};
+    std::vector<std::string> parentIds;
+    std::string         sql  = "SELECT parent_group_id FROM group_inheritance WHERE group_id = ?;";
+    auto           rows = m_db->queryPrepared(sql, {groupId});
+    for (auto& row : rows)
+        if (!row.empty()) parentIds.push_back(row[0]);
+    return parentIds;
 }
 
 } // namespace internal

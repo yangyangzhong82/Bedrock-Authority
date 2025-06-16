@@ -33,6 +33,11 @@ void PermissionCache::populateAllGroups(unordered_map<string, string>&& groupNam
     m_groupNameCache = std::move(groupNameMap);
 }
 
+const std::unordered_map<std::string, std::string>& PermissionCache::getAllGroups() const {
+    shared_lock<shared_mutex> lock(m_groupNameMutex);
+    return m_groupNameCache;
+}
+
 // --- Player Permissions Cache ---
 optional<vector<CompiledPermissionRule>> PermissionCache::findPlayerPermissions(const string& playerUuid) {
     shared_lock<shared_mutex> lock(m_playerPermissionsMutex);
@@ -127,6 +132,11 @@ void PermissionCache::storePermissionDefault(const string& permissionName, bool 
 void PermissionCache::populateAllPermissionDefaults(unordered_map<string, bool>&& defaultsMap) {
     unique_lock<shared_mutex> lock(m_permissionDefaultsMutex);
     m_permissionDefaultsCache = std::move(defaultsMap);
+}
+
+const std::unordered_map<std::string, bool>& PermissionCache::getAllPermissionDefaults() const {
+    shared_lock<shared_mutex> lock(m_permissionDefaultsMutex);
+    return m_permissionDefaultsCache;
 }
 
 // --- Inheritance Cache ---

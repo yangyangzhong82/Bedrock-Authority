@@ -3,6 +3,7 @@
 #include <string>
 #include <algorithm> // for std::search
 #include <cctype>    // for std::tolower
+#include <memory>    // for std::unique_ptr
 #include "ll/api/mod/NativeMod.h"
 #include "ll/api/io/Logger.h"
 
@@ -241,14 +242,9 @@ std::vector<std::vector<std::string>> MySQLDatabase::queryPrepared(const std::st
     std::vector<MYSQL_BIND> result_bind(num_fields);
     std::vector<std::vector<char>> result_buffers(num_fields); // 存储数据缓冲区
     std::vector<unsigned long> result_lengths(num_fields);     // 存储实际长度
-    // 使用 C 数组的 bool 来直接匹配编译器期望的 bool* 类型
-    bool* is_null_arr = new bool[num_fields]; // 在堆上分配
-    bool* error_arr = new bool[num_fields];   // 在堆上分配
-    // 确保即使提前退出也能清理
-    auto cleanup = [&]() {
-        delete[] is_null_arr;
-        delete[] error_arr;
-    };
+    // 使用智能指针管理动态分配的 bool 数组
+    std::unique_ptr<bool[]> is_null_arr(new bool[num_fields]);
+    std::unique_ptr<bool[]> error_arr(new bool[num_fields]);
 
     for (int i = 0; i < num_fields; ++i) {
         // 分配一个合理的缓冲区大小，例如 1024 字节。
@@ -267,7 +263,6 @@ std::vector<std::vector<std::string>> MySQLDatabase::queryPrepared(const std::st
 
     if (mysql_stmt_bind_result(stmt, result_bind.data()) != 0) {
         logger.error("MySQL mysql_stmt_bind_result 失败: %s", mysql_stmt_error(stmt));
-        cleanup(); // 清理已分配的内存
         mysql_free_result(meta_result);
         mysql_stmt_close(stmt);
         return result;
@@ -276,7 +271,6 @@ std::vector<std::vector<std::string>> MySQLDatabase::queryPrepared(const std::st
     // 存储结果以允许获取
     if (mysql_stmt_store_result(stmt) != 0) {
          logger.error("MySQL mysql_stmt_store_result 失败: %s", mysql_stmt_error(stmt));
-         cleanup(); // 清理已分配的内存
          mysql_free_result(meta_result);
          mysql_stmt_close(stmt);
          return result;
@@ -320,10 +314,6 @@ std::vector<std::vector<std::string>> MySQLDatabase::queryPrepared(const std::st
         // 结果可能部分填充
     }
 
-
-    // 清理已分配的 C 数组
-    cleanup();
-
     mysql_free_result(meta_result);
     mysql_stmt_close(stmt);
     logger.debug("MySQL queryPrepared 返回 %zu 行", result.size());
@@ -357,6 +347,20 @@ std::string MySQLDatabase::getInsertOrIgnoreSql(const std::string& tableName, co
 // 新增：获取自增主键的数据库方言定义
 std::string MySQLDatabase::getAutoIncrementPrimaryKeyDefinition() const {
     return "INT AUTO_INCREMENT PRIMARY KEY";
+}
+
+std::string MySQLDatabase::getInClausePlaceholders(size_t count) const {
+    if (count == 0) {
+        return "";
+    }
+    std::string placeholders;
+    for (size_t i = 0; i < count; ++i) {
+        placeholders += "?";
+        if (i < count - 1) {
+            placeholders += ", ";
+        }
+    }
+    return placeholders;
 }
 
 bool MySQLDatabase::beginTransaction() {

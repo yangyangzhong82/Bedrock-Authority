@@ -68,26 +68,27 @@ void AsyncCacheInvalidator::enqueueTask(CacheInvalidationTask task) {
         return;
     }
 
+    // 扩大 m_pendingTasksMutex 的锁定范围，使其包含对 m_taskQueue 的操作
     {
-        unique_lock<mutex> lock(m_queueMutex);
-        // Task coalescing logic
-        {
-            unique_lock<mutex> pendingLock(m_pendingTasksMutex);
-            if (task.type == CacheInvalidationTaskType::GROUP_MODIFIED) {
-                if (m_allGroupsModifiedPending || m_pendingGroupModifiedTasks.count(task.data)) {
-                    // Merged
-                    return;
-                }
-                m_pendingGroupModifiedTasks.insert(task.data);
-            } else if (task.type == CacheInvalidationTaskType::ALL_GROUPS_MODIFIED) {
-                if (m_allGroupsModifiedPending) {
-                    // Merged
-                    return;
-                }
-                m_pendingGroupModifiedTasks.clear(); // ALL subsumes specific group modifications
-                m_allGroupsModifiedPending = true;
+        unique_lock<mutex> pendingLock(m_pendingTasksMutex); // 先锁定 m_pendingTasksMutex
+        // 任务合并逻辑
+        if (task.type == CacheInvalidationTaskType::GROUP_MODIFIED) {
+            if (m_allGroupsModifiedPending || m_pendingGroupModifiedTasks.count(task.data)) {
+                // 已合并
+                return;
             }
+            m_pendingGroupModifiedTasks.insert(task.data);
+        } else if (task.type == CacheInvalidationTaskType::ALL_GROUPS_MODIFIED) {
+            if (m_allGroupsModifiedPending) {
+                // 已合并
+                return;
+            }
+            m_pendingGroupModifiedTasks.clear(); // ALL 任务包含所有特定组修改
+            m_allGroupsModifiedPending = true;
         }
+
+        // 在 m_pendingTasksMutex 保护下将任务推入队列
+        unique_lock<mutex> queueLock(m_queueMutex); // 然后锁定 m_queueMutex
         m_taskQueue.push(std::move(task));
     }
     m_condition.notify_one();
@@ -98,27 +99,30 @@ void AsyncCacheInvalidator::processTasks() {
     while (true) {
         CacheInvalidationTask task;
         {
-            unique_lock<mutex> lock(m_queueMutex);
-            m_condition.wait(lock, [this] { return !m_taskQueue.empty(); });
+            // 统一锁顺序：先获取 m_pendingTasksMutex，再获取 m_queueMutex
+            unique_lock<mutex> pendingLock(m_pendingTasksMutex); // 锁A
+            unique_lock<mutex> queueLock(m_queueMutex);          // 锁B
 
+            // 等待队列非空
+            m_condition.wait(queueLock, [this] { return !m_taskQueue.empty(); });
+
+            // 从队列中取出任务
             task = std::move(m_taskQueue.front());
             m_taskQueue.pop();
-        }
 
-        // Handle SHUTDOWN task first
-        if (task.type == CacheInvalidationTaskType::SHUTDOWN) {
-            logger.debug("Worker thread received SHUTDOWN task and is exiting.");
-            break; // Exit the loop and terminate the thread
-        }
-
-        // Update pending tasks state after dequeuing
-        {
-            unique_lock<mutex> pendingLock(m_pendingTasksMutex);
+            // 在 m_pendingTasksMutex 保护下更新待处理任务状态
+            // 此时 m_pendingTasksMutex 已经被持有，所以可以直接修改
             if (task.type == CacheInvalidationTaskType::GROUP_MODIFIED) {
                 m_pendingGroupModifiedTasks.erase(task.data);
             } else if (task.type == CacheInvalidationTaskType::ALL_GROUPS_MODIFIED) {
                 m_allGroupsModifiedPending = false;
             }
+        } // pendingLock 和 queueLock 在这里同时释放
+
+        // Handle SHUTDOWN task first
+        if (task.type == CacheInvalidationTaskType::SHUTDOWN) {
+            logger.debug("Worker thread received SHUTDOWN task and is exiting.");
+            break; // Exit the loop and terminate the thread
         }
 
         try {
@@ -188,15 +192,27 @@ vector<string> AsyncCacheInvalidator::getAffectedPlayersByGroup(const string& gr
     );
 
     // For each related group, get its members from the storage layer.
-    for (const auto& relatedGroupName : allRelatedGroups) {
-        // We need the group ID to query the player_groups table
-        string groupId = m_storage.fetchGroupIdByName(relatedGroupName);
-        if (groupId.empty()) {
-            continue;
-        }
+    // First, collect all group names to query their IDs in bulk.
+    set<string> groupNamesToFetchIds;
+    for (const auto& groupName : allRelatedGroups) {
+        groupNamesToFetchIds.insert(groupName);
+    }
 
-        vector<string> playersInGroup = m_storage.fetchPlayersInGroup(groupId);
-        affectedPlayerUuids.insert(playersInGroup.begin(), playersInGroup.end());
+    // Bulk fetch group IDs
+    unordered_map<string, string> groupNameToIdMap = m_storage.fetchGroupIdsByNames(groupNamesToFetchIds);
+
+    vector<string> groupIdsToFetchPlayers;
+    for (const auto& groupName : allRelatedGroups) {
+        auto it = groupNameToIdMap.find(groupName);
+        if (it != groupNameToIdMap.end()) {
+            groupIdsToFetchPlayers.push_back(it->second);
+        }
+    }
+
+    // Bulk fetch players in these groups
+    if (!groupIdsToFetchPlayers.empty()) {
+        vector<string> playersInGroups = m_storage.fetchPlayersInGroups(groupIdsToFetchPlayers);
+        affectedPlayerUuids.insert(playersInGroups.begin(), playersInGroups.end());
     }
 
     return vector<string>(affectedPlayerUuids.begin(), affectedPlayerUuids.end());

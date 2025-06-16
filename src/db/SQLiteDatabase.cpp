@@ -202,6 +202,20 @@ std::string SQLiteDatabase::getAutoIncrementPrimaryKeyDefinition() const {
     return "INTEGER PRIMARY KEY AUTOINCREMENT";
 }
 
+std::string SQLiteDatabase::getInClausePlaceholders(size_t count) const {
+    if (count == 0) {
+        return "";
+    }
+    std::string placeholders;
+    for (size_t i = 0; i < count; ++i) {
+        placeholders += "?";
+        if (i < count - 1) {
+            placeholders += ", ";
+        }
+    }
+    return placeholders;
+}
+
 bool SQLiteDatabase::beginTransaction() {
     return execute("BEGIN TRANSACTION;");
 }

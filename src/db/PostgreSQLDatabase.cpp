@@ -244,6 +244,20 @@ string PostgreSQLDatabase::getAutoIncrementPrimaryKeyDefinition() const {
     return "SERIAL PRIMARY KEY";
 }
 
+std::string PostgreSQLDatabase::getInClausePlaceholders(size_t count) const {
+    if (count == 0) {
+        return "";
+    }
+    std::string placeholders;
+    for (size_t i = 0; i < count; ++i) {
+        placeholders += "$" + std::to_string(i + 1);
+        if (i < count - 1) {
+            placeholders += ", ";
+        }
+    }
+    return placeholders;
+}
+
 bool PostgreSQLDatabase::beginTransaction() {
     return execute("BEGIN;");
 }
