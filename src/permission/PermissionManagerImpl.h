@@ -1,11 +1,12 @@
 #pragma once
 
-#include "permission/PermissionData.h"       // 包含权限数据结构定义
-#include "permission/PermissionManager.h"    // 包含主类的定义以访问其作用域
-#include <memory>                            // 包含智能指针
-#include <string>                            // 包含字符串类型
-#include <vector>                            // 包含向量类型
-#include <regex>                             // 包含正则表达式库
+#include "permission/PermissionData.h"    // 包含权限数据结构定义
+#include "permission/PermissionManager.h" // 包含主类的定义以访问其作用域
+#include <memory>                         // 包含智能指针
+#include <regex>                          // 包含正则表达式库
+#include <string>                         // 包含字符串类型
+#include <vector>                         // 包含向量类型
+
 
 // 前向声明内部类，以避免在头文件中包含它们的完整定义，减少编译依赖
 namespace BA {
@@ -77,19 +78,19 @@ public:
      * @param description 组描述。
      * @return 如果创建成功则返回 true，否则返回 false。
      */
-    bool                     createGroup(const std::string& groupName, const std::string& description);
+    bool createGroup(const std::string& groupName, const std::string& description);
     /**
      * @brief 删除一个组。
      * @param groupName 要删除的组名称。
      * @return 如果删除成功则返回 true，否则返回 false。
      */
-    bool                     deleteGroup(const std::string& groupName);
+    bool deleteGroup(const std::string& groupName);
     /**
      * @brief 检查组是否存在。
      * @param groupName 组名称。
      * @return 如果组存在则返回 true，否则返回 false。
      */
-    bool                     groupExists(const std::string& groupName);
+    bool groupExists(const std::string& groupName);
     /**
      * @brief 获取所有组的名称。
      * @return 包含所有组名称的向量。
@@ -100,20 +101,20 @@ public:
      * @param groupName 组名称。
      * @return 组的详细信息对象。
      */
-    GroupDetails             getGroupDetails(const std::string& groupName);
+    GroupDetails getGroupDetails(const std::string& groupName);
     /**
      * @brief 更新组的描述。
      * @param groupName 组名称。
      * @param newDescription 新的组描述。
      * @return 如果更新成功则返回 true，否则返回 false。
      */
-    bool                     updateGroupDescription(const std::string& groupName, const std::string& newDescription);
+    bool updateGroupDescription(const std::string& groupName, const std::string& newDescription);
     /**
      * @brief 获取组的描述。
      * @param groupName 组名称。
      * @return 组的描述字符串。
      */
-    std::string              getGroupDescription(const std::string& groupName);
+    std::string getGroupDescription(const std::string& groupName);
 
     // --- 组权限管理 ---
     /**
@@ -122,14 +123,14 @@ public:
      * @param permissionRule 权限规则字符串。
      * @return 如果添加成功则返回 true，否则返回 false。
      */
-    bool                     addPermissionToGroup(const std::string& groupName, const std::string& permissionRule);
+    bool addPermissionToGroup(const std::string& groupName, const std::string& permissionRule);
     /**
      * @brief 从组中移除权限规则。
      * @param groupName 组名称。
      * @param permissionRule 权限规则字符串。
      * @return 如果移除成功则返回 true，否则返回 false。
      */
-    bool                     removePermissionFromGroup(const std::string& groupName, const std::string& permissionRule);
+    bool removePermissionFromGroup(const std::string& groupName, const std::string& permissionRule);
     /**
      * @brief 获取组的直接权限。
      * @param groupName 组名称。
@@ -164,14 +165,14 @@ public:
      * @param parentGroupName 父组名称。
      * @return 如果添加成功则返回 true，否则返回 false。
      */
-    bool                     addGroupInheritance(const std::string& groupName, const std::string& parentGroupName);
+    bool addGroupInheritance(const std::string& groupName, const std::string& parentGroupName);
     /**
      * @brief 移除组继承关系。
      * @param groupName 子组名称。
      * @param parentGroupName 父组名称。
      * @return 如果移除成功则返回 true，否则返回 false。
      */
-    bool                     removeGroupInheritance(const std::string& groupName, const std::string& parentGroupName);
+    bool removeGroupInheritance(const std::string& groupName, const std::string& parentGroupName);
     /**
      * @brief 获取组的所有祖先组（包括自身）。
      * @param groupName 组名称。
@@ -198,7 +199,7 @@ public:
      * @param groupName 组名称。
      * @return 组的优先级值。
      */
-    int  getGroupPriority(const std::string& groupName);
+    int getGroupPriority(const std::string& groupName);
 
     // --- 玩家管理功能 ---
     /**
@@ -207,32 +208,33 @@ public:
      * @param groupName 组名称。
      * @return 如果添加成功则返回 true，否则返回 false。
      */
-    bool                      addPlayerToGroup(const std::string& playerUuid, const std::string& groupName);
+    bool addPlayerToGroup(const std::string& playerUuid, const std::string& groupName);
+    bool addPlayerToGroup(const std::string& playerUuid, const std::string& groupName, long long durationSeconds);
     /**
      * @brief 将玩家从组中移除。
      * @param playerUuid 玩家的 UUID。
      * @param groupName 组名称。
      * @return 如果移除成功则返回 true，否则返回 false。
      */
-    bool                      removePlayerFromGroup(const std::string& playerUuid, const std::string& groupName);
+    bool removePlayerFromGroup(const std::string& playerUuid, const std::string& groupName);
     /**
      * @brief 获取玩家所属的所有组名称。
      * @param playerUuid 玩家的 UUID。
      * @return 包含玩家所属组名称的向量。
      */
-    std::vector<std::string>  getPlayerGroups(const std::string& playerUuid);
+    std::vector<std::string> getPlayerGroups(const std::string& playerUuid);
     /**
      * @brief 获取玩家所属的所有组 ID。
      * @param playerUuid 玩家的 UUID。
      * @return 包含玩家所属组 ID 的向量。
      */
-    std::vector<std::string>  getPlayerGroupIds(const std::string& playerUuid);
+    std::vector<std::string> getPlayerGroupIds(const std::string& playerUuid);
     /**
      * @brief 获取组中的所有玩家 UUID。
      * @param groupName 组名称。
      * @return 包含组中所有玩家 UUID 的向量。
      */
-    std::vector<std::string>  getPlayersInGroup(const std::string& groupName);
+    std::vector<std::string> getPlayersInGroup(const std::string& groupName);
     /**
      * @brief 获取玩家所属的组及其优先级。
      * @param playerUuid 玩家的 UUID。
@@ -267,7 +269,8 @@ public:
      * @param permissionNode 要检查的权限节点。
      * @return 如果玩家拥有该权限则返回 true，否则返回 false。
      */
-    bool                                hasPermission(const std::string& playerUuid, const std::string& permissionNode);
+    bool hasPermission(const std::string& playerUuid, const std::string& permissionNode);
+    void runPeriodicCleanup();
 
 private:
     // --- 辅助方法 ---
@@ -282,12 +285,12 @@ private:
      * @param pattern 包含通配符的字符串模式。
      * @return 对应的正则表达式对象。
      */
-    std::regex  wildcardToRegex(const std::string& pattern);
+    std::regex wildcardToRegex(const std::string& pattern);
     /**
      * @brief 预热所有权限缓存。
      *        此方法会从存储层加载数据并填充到缓存中，以提高后续查询性能。
      */
-    void        populateAllCaches();
+    void populateAllCaches();
 
     // --- 成员变量 ---
     // 使用 unique_ptr 来管理内部组件的生命周期，确保资源自动释放

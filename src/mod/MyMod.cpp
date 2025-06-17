@@ -71,6 +71,10 @@ bool MyMod::load() {
                 std::make_unique<http::HttpServer>(getSelf(), config_, permission::PermissionManager::getInstance());
             getSelf().getLogger().info("HttpServer initialized.");
 
+            // 初始化 CleanupScheduler
+            m_cleanupScheduler = std::make_unique<permission::CleanupScheduler>(config_.cleanup_interval_seconds);
+            getSelf().getLogger().info("CleanupScheduler initialized with interval {} seconds.", config_.cleanup_interval_seconds);
+
         } else {
             // 这个分支理论上不应该执行，因为如果 db_ 为空，上面的 catch 会捕获异常
             getSelf().getLogger().error(
@@ -94,6 +98,9 @@ bool MyMod::enable() {
     if (httpServer_) {
         httpServer_->start();
     }
+    if (m_cleanupScheduler) {
+        m_cleanupScheduler->start();
+    }
     getSelf().getLogger().info("Mod enabled");
     BA::Command::RegisterCommands();
 
@@ -106,6 +113,10 @@ bool MyMod::disable() {
     // 停止 HTTP 服务器
     if (httpServer_) {
         httpServer_->stop();
+    }
+    // 停止清理调度器
+    if (m_cleanupScheduler) {
+        m_cleanupScheduler->stop();
     }
     // 关闭 PermissionManager，停止其异步工作线程
     permission::PermissionManager::getInstance().shutdown();

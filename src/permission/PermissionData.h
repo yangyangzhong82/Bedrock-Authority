@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional> // 显式包含 optional
 #include <regex>
 #include <set>
 #include <string>
@@ -46,15 +47,17 @@ struct GroupDetails {
     std::string description;
     int         priority;
     bool        isValid = false;
+    std::optional<long long> expirationTime; // 新增字段：过期时间戳 (Unix epoch milliseconds)
 
     GroupDetails() = default;
 
-    GroupDetails(std::string id, std::string name, std::string description, int priority)
+    GroupDetails(std::string id, std::string name, std::string description, int priority, std::optional<long long> expirationTime = std::nullopt)
     : id(std::move(id)),
       name(std::move(name)),
       description(std::move(description)),
       priority(priority),
-      isValid(true) {}
+      isValid(true),
+      expirationTime(std::move(expirationTime)) {}
 };
 
 // 结构体用于在 getAllPermissionsForPlayer 中统一处理组权限

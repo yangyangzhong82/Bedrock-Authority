@@ -95,6 +95,7 @@ bool PermissionStorage::ensureTables() {
             "player_groups",
             "player_uuid VARCHAR(36) NOT NULL, "
             "group_id INT NOT NULL, "
+            "expiry_timestamp BIGINT NULL DEFAULT NULL, "
             "PRIMARY KEY (player_uuid, group_id), "
             "FOREIGN KEY (group_id) REFERENCES permission_groups(id) ON DELETE CASCADE"
         ),
@@ -457,10 +458,32 @@ std::unordered_map<std::string, std::set<std::string>> PermissionStorage::fetchA
  * @return 如果添加成功，则返回 true；否则返回 false。
  */
 bool PermissionStorage::addPlayerToGroup(const std::string& playerUuid, const std::string& groupId) {
+    return addPlayerToGroup(playerUuid, groupId, std::nullopt);
+}
+
+bool PermissionStorage::addPlayerToGroup(
+    const std::string&              playerUuid,
+    const std::string&              groupId,
+    const std::optional<long long>& expiryTimestamp
+) {
     if (!m_db) return false;
-    std::string insertSql =
-        m_db->getInsertOrIgnoreSql("player_groups", "player_uuid, group_id", "?, ?", "player_uuid, group_id");
-    return m_db->executePrepared(insertSql, {playerUuid, groupId});
+
+    // 这是一个通用的“插入或更新”逻辑
+    // 1. 先尝试删除，确保我们是从一个干净的状态开始
+    std::string deleteSql = "DELETE FROM player_groups WHERE player_uuid = ? AND group_id = ?;";
+    m_db->executePrepared(deleteSql, {playerUuid, groupId}); // 忽略结果
+
+    // 2. 插入新记录
+    std::string insertSql = "INSERT INTO player_groups (player_uuid, group_id, expiry_timestamp) VALUES (?, ?, ?);";
+    if (expiryTimestamp.has_value()) {
+        return m_db->executePrepared(insertSql, {playerUuid, groupId, std::to_string(*expiryTimestamp)});
+    } else {
+        // 数据库驱动应该能处理 NULL
+        return m_db->executePrepared(
+            insertSql,
+            {playerUuid, groupId, ""}
+        ); // 假设空字符串被驱动解释为NULL，或使用特定于驱动的方法
+    }
 }
 
 /**
@@ -483,11 +506,19 @@ bool PermissionStorage::removePlayerFromGroup(const std::string& playerUuid, con
 std::vector<GroupDetails> PermissionStorage::fetchPlayerGroupsWithDetails(const std::string& playerUuid) {
     if (!m_db) return {};
     std::vector<GroupDetails> playerGroupDetails;
-    std::string               sql  = "SELECT pg.id, pg.name, pg.description, pg.priority "
-                                     "FROM permission_groups pg "
-                                     "JOIN player_groups pgr ON pg.id = pgr.group_id "
-                                     "WHERE pgr.player_uuid = ?;";
-    auto                      rows = m_db->queryPrepared(sql, {playerUuid});
+
+    // 获取当前时间的Unix时间戳
+    long long currentTime =
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+
+    // 修改SQL查询以过滤过期的记录
+    // 条件: expiry_timestamp 为 NULL (永不) 或 expiry_timestamp > 当前时间
+    std::string sql = "SELECT pg.id, pg.name, pg.description, pg.priority "
+                      "FROM permission_groups pg "
+                      "JOIN player_groups pgr ON pg.id = pgr.group_id "
+                      "WHERE pgr.player_uuid = ? AND (pgr.expiry_timestamp IS NULL OR pgr.expiry_timestamp > ?);";
+
+    auto rows = m_db->queryPrepared(sql, {playerUuid, std::to_string(currentTime)});
     for (const auto& row : rows) {
         if (row.size() >= 4) {
             try {
@@ -734,6 +765,33 @@ std::unordered_map<std::string, std::string> PermissionStorage::fetchGroupNamesB
         }
     }
     return groupNameMap;
+}
+
+std::vector<std::string> PermissionStorage::deleteExpiredPlayerGroups() {
+    if (!m_db) return {};
+
+    long long currentTime =
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+
+    // 1. 查询所有过期的玩家 UUID
+    std::vector<std::string> expiredPlayerUuids;
+    std::string selectSql = "SELECT DISTINCT player_uuid FROM player_groups WHERE expiry_timestamp IS NOT NULL AND expiry_timestamp <= ?;";
+    auto rows = m_db->queryPrepared(selectSql, {std::to_string(currentTime)});
+    for (const auto& row : rows) {
+        if (!row.empty()) {
+            expiredPlayerUuids.push_back(row[0]);
+        }
+    }
+
+    // 2. 删除过期的玩家组记录
+    std::string deleteSql = "DELETE FROM player_groups WHERE expiry_timestamp IS NOT NULL AND expiry_timestamp <= ?;";
+    if (m_db->executePrepared(deleteSql, {std::to_string(currentTime)})) {
+        ::ll::mod::NativeMod::current()->getLogger().debug("已执行过期的玩家组清理，删除了 {} 条记录。", expiredPlayerUuids.size());
+    } else {
+        ::ll::mod::NativeMod::current()->getLogger().warn("执行过期的玩家组清理失败。");
+    }
+
+    return expiredPlayerUuids;
 }
 
 } // namespace internal

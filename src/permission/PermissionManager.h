@@ -198,6 +198,11 @@ public:
      * @return 如果添加成功则返回 true，否则返回 false。
      */
     BA_API bool addPlayerToGroup(const std::string& playerUuid, const std::string& groupName);
+    BA_API bool addPlayerToGroup(
+        const std::string& playerUuid,
+        const std::string& groupName,
+        long long          durationSeconds
+    ); // 新增：带过期时间的方法，durationSeconds 为 0 或负数表示永不过期
     /**
      * @brief 将玩家从权限组中移除。
      * @param playerUuid 玩家的 UUID。
@@ -258,6 +263,7 @@ public:
      * @return 如果玩家拥有该权限则返回 true，否则返回 false。
      */
     BA_API bool hasPermission(const std::string& playerUuid, const std::string& permissionNode);
+    BA_API void runPeriodicCleanup(); // 新增：一个公共方法来触发清理任务
 
 private:
     // PIMPL: 前向声明实现类

@@ -255,6 +255,13 @@ int PermissionManager::getGroupPriority(const std::string& groupName) { return m
 bool PermissionManager::addPlayerToGroup(const std::string& playerUuid, const std::string& groupName) {
     return m_pimpl->addPlayerToGroup(playerUuid, groupName);
 }
+bool PermissionManager::addPlayerToGroup(
+    const std::string& playerUuid,
+    const std::string& groupName,
+    long long          durationSeconds
+) {
+    return m_pimpl->addPlayerToGroup(playerUuid, groupName, durationSeconds);
+}
 
 /**
  * @brief 将玩家从权限组中移除。
@@ -341,7 +348,7 @@ std::vector<CompiledPermissionRule> PermissionManager::getAllPermissionsForPlaye
 bool PermissionManager::hasPermission(const std::string& playerUuid, const std::string& permissionNode) {
     return m_pimpl->hasPermission(playerUuid, permissionNode);
 }
-
+void PermissionManager::runPeriodicCleanup() { m_pimpl->runPeriodicCleanup(); }
 
 } // namespace permission
 } // namespace BA

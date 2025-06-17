@@ -591,16 +591,31 @@ bool PermissionManager::PermissionManagerImpl::addPlayerToGroup(
     const std::string& playerUuid,
     const std::string& groupName
 ) {
+    return addPlayerToGroup(playerUuid, groupName, 0);
+}
+bool PermissionManager::PermissionManagerImpl::addPlayerToGroup(
+    const std::string& playerUuid,
+    const std::string& groupName,
+    long long          durationSeconds
+) {
     string groupId = getCachedGroupId(groupName);
     if (groupId.empty()) return false; // 组不存在
-    if (m_storage->addPlayerToGroup(playerUuid, groupId)) {
-        // 玩家组关系修改后，需要使该玩家的权限缓存失效
+
+    std::optional<long long> expiryTimestamp;
+    if (durationSeconds > 0) {
+        long long currentTime =
+            std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count();
+        expiryTimestamp = currentTime + durationSeconds;
+    }
+
+    if (m_storage->addPlayerToGroup(playerUuid, groupId, expiryTimestamp)) {
+        // 玩家组关系修改后，需要使该玩家的权限和组缓存失效
         m_invalidator->enqueueTask({CacheInvalidationTaskType::PLAYER_GROUP_CHANGED, playerUuid});
         return true;
     }
     return false;
 }
-
 /**
  * @brief 将玩家从组中移除。
  * @param playerUuid 玩家的 UUID。
@@ -842,6 +857,20 @@ size_t PermissionManager::PermissionManagerImpl::removePlayerFromGroups(
     return count;
 }
 
+// 新增清理方法
+void PermissionManager::PermissionManagerImpl::runPeriodicCleanup() {
+    auto& logger = ::ll::mod::NativeMod::current()->getLogger();
+    logger.debug("正在运行定期的权限清理任务...");
+    std::vector<std::string> affectedPlayers = m_storage->deleteExpiredPlayerGroups();
+    if (!affectedPlayers.empty()) {
+        logger.debug("权限清理任务完成。已删除 {} 条过期记录，并使受影响玩家的缓存失效。", affectedPlayers.size());
+        for (const auto& playerUuid : affectedPlayers) {
+            m_invalidator->enqueueTask({CacheInvalidationTaskType::PLAYER_GROUP_CHANGED, playerUuid});
+        }
+    } else {
+        logger.debug("权限清理任务：没有过期的记录需要删除。");
+    }
+}
 
 } // namespace permission
 } // namespace BA

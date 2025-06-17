@@ -29,6 +29,9 @@ struct Config {
     // Cache Warmup Config
     bool enable_cache_warmup = true; // 是否在启动时预热缓存
     unsigned int cache_worker_threads = 4; // 缓存失效工作线程池大小
+
+    // Cleanup Scheduler Config
+    long long cleanup_interval_seconds = 3600; // 定期清理任务的执行间隔（秒），默认为 1 小时
 };
 
 } // namespace config
