@@ -2,6 +2,7 @@
 #include "mc/world/actor/player/Player.h"       // 包含 Player
 #include "ll/api/command/SoftEnum.h" // 新增: 包含 SoftEnum
 #include <string>
+#include <optional> // 新增: 包含 optional
 
 namespace BA::Command {
     void RegisterCommands();
@@ -12,7 +13,8 @@ namespace BA::Command {
 
     struct 添加玩家权限组 {
         CommandSelector<Player> playerName;         // 目标玩家选择器
-        ll::command::SoftEnum<PermissionGroupEnum> 权限组id;  
+        ll::command::SoftEnum<PermissionGroupEnum> 权限组id;
+        std::string 可选过期时间 = ""; // 新增：可选参数，以分钟为单位，改为字符串类型，并设置默认值
     };
     struct 列出玩家权限组 {
         CommandSelector<Player> playerName;         // 目标玩家选择器
@@ -25,7 +27,8 @@ namespace BA::Command {
 
     struct 离线添加玩家权限组 {
         std::string playerName;         // 目标玩家选择器
-        ll::command::SoftEnum<PermissionGroupEnum> 权限组id;  
+        ll::command::SoftEnum<PermissionGroupEnum> 权限组id;
+        std::string 可选过期时间 = ""; // 新增：可选参数，以分钟为单位，改为字符串类型，并设置默认值
     };
 
     struct 离线列出玩家权限组节点 {

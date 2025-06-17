@@ -102,6 +102,12 @@ bool PermissionStorage::ensureTables() {
         "创建玩家组表"
     );
 
+    // 确保 player_groups 表有 expiry_timestamp 列
+    executeAndLog(
+        m_db->getAddColumnSql("player_groups", "expiry_timestamp", "BIGINT NULL DEFAULT NULL"),
+        "为 player_groups 表添加 expiry_timestamp 列"
+    );
+
     // 索引
     executeAndLog(
         m_db->getCreateIndexSql("idx_permissions_name", "permissions", "name"),

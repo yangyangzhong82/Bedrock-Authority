@@ -95,6 +95,7 @@ namespace BA::Command {
         .text("加入权限组")
         .required("playerName")
         .required("权限组id")
+        .optional("可选过期时间") // 新增可选参数
         .execute([&](CommandOrigin const& origin, CommandOutput& output, 添加玩家权限组 const& param, ::Command const&) {
             auto results = param.playerName.results(origin); // 解析目标选择器
 
@@ -106,9 +107,39 @@ namespace BA::Command {
                 if (!player) continue; // 跳过无效的玩家指针
 
                 std::string uuidStr = player->getUuid().asString(); // 获取玩家 UUID 字符串
-                bool ok = pm.addPlayerToGroup(uuidStr, param.权限组id);
+                bool ok;
+                std::string message;
+                long long durationSeconds = 0;
+                bool hasDuration = false;
+
+                if (!param.可选过期时间.empty()) { // 检查字符串是否为空
+                    try {
+                        int minutes = std::stoi(param.可选过期时间); // 直接使用字符串
+                        if (minutes < 0) {
+                            output.error("过期时间不能为负数。");
+                            return;
+                        }
+                        durationSeconds = static_cast<long long>(minutes) * 60; // 分钟转秒
+                        hasDuration = true;
+                    } catch (const std::invalid_argument& e) {
+                        output.error("无效的过期时间格式，请输入一个整数。");
+                        return;
+                    } catch (const std::out_of_range& e) {
+                        output.error("过期时间超出有效范围。");
+                        return;
+                    }
+                }
+
+                if (hasDuration) {
+                    ok = pm.addPlayerToGroup(uuidStr, param.权限组id, durationSeconds);
+                    message = fmt::format("已将玩家 {} 加入权限组 {}，过期时间为 {} 分钟。", player->getRealName(), param.权限组id, param.可选过期时间);
+                } else {
+                    ok = pm.addPlayerToGroup(uuidStr, param.权限组id);
+                    message = fmt::format("已将玩家 {} 加入权限组 {}。", player->getRealName(), param.权限组id);
+                }
+
                 if (ok) {
-                    output.success("已将玩家加入权限组: " + param.权限组id);
+                    output.success(message);
                 } else {
                     output.error("添加失败，权限组可能不存在或玩家已在组内");
                 }
@@ -119,6 +150,7 @@ namespace BA::Command {
         .text("加入权限组")
         .required("playerName")
         .required("权限组id")
+        .optional("可选过期时间") // 新增可选参数
         .execute([&](CommandOrigin const& origin, CommandOutput& output, 离线添加玩家权限组 const& param, ::Command const&) {
                 // 使用 PlayerInfo 获取玩家信息
                 auto playerInfoOpt = PlayerInfo::getInstance().fromName(param.playerName);
@@ -129,14 +161,44 @@ namespace BA::Command {
                 const auto& playerInfo = playerInfoOpt.value();
                 std::string uuidStr = playerInfo.uuid.asString(); // 获取 UUID
 
-                bool ok = pm.addPlayerToGroup(uuidStr, param.权限组id);
+                bool ok;
+                std::string message;
+                long long durationSeconds = 0;
+                bool hasDuration = false;
+
+                if (!param.可选过期时间.empty()) { // 检查字符串是否为空
+                    try {
+                        int minutes = std::stoi(param.可选过期时间); // 直接使用字符串
+                        if (minutes < 0) {
+                            output.error("过期时间不能为负数。");
+                            return;
+                        }
+                        durationSeconds = static_cast<long long>(minutes) * 60; // 分钟转秒
+                        hasDuration = true;
+                    } catch (const std::invalid_argument& e) {
+                        output.error("无效的过期时间格式，请输入一个整数。");
+                        return;
+                    } catch (const std::out_of_range& e) {
+                        output.error("过期时间超出有效范围。");
+                        return;
+                    }
+                }
+
+                if (hasDuration) {
+                    ok = pm.addPlayerToGroup(uuidStr, param.权限组id, durationSeconds);
+                    message = fmt::format("已将离线玩家 {} 加入权限组 {}，过期时间为 {} 分钟。", playerInfo.name, param.权限组id, param.可选过期时间);
+                } else {
+                    ok = pm.addPlayerToGroup(uuidStr, param.权限组id);
+                    message = fmt::format("已将离线玩家 {} 加入权限组 {}。", playerInfo.name, param.权限组id);
+                }
+
                 if (ok) {
-                    output.success("已将玩家加入权限组: " + param.权限组id);
+                    output.success(message);
                 } else {
                     output.error("添加失败，权限组可能不存在或玩家已在组内");
-                
+                }
             }
-        });
+        );
 
         cmd.overload<列出玩家权限组>()
         .text("列出玩家权限组")
