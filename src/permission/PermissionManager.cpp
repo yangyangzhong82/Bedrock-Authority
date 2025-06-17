@@ -299,7 +299,31 @@ std::vector<std::string> PermissionManager::getPlayerGroupIds(const std::string&
 std::vector<std::string> PermissionManager::getPlayersInGroup(const std::string& groupName) {
     return m_pimpl->getPlayersInGroup(groupName);
 }
+/**
+ * @brief 获取玩家在某个权限组中的身份过期时间。
+ * @param playerUuid 玩家的 UUID。
+ * @param groupName 组名称。
+ * @return 可选的 long long，表示 Unix 时间戳（秒）。如果玩家不在组中或身份永不过期，则返回 std::nullopt。
+ */
+std::optional<long long>
+PermissionManager::getPlayerGroupExpirationTime(const std::string& playerUuid, const std::string& groupName) {
+    return m_pimpl->getPlayerGroupExpirationTime(playerUuid, groupName);
+}
 
+/**
+ * @brief 设置玩家在某个权限组中的身份过期时间。
+ * @param playerUuid 玩家的 UUID。
+ * @param groupName 组名称。
+ * @param durationSeconds 从现在开始的持续时间（秒）。小于或等于 0 的值表示永不过期。
+ * @return 如果设置成功则返回 true，否则返回 false。
+ */
+bool PermissionManager::setPlayerGroupExpirationTime(
+    const std::string& playerUuid,
+    const std::string& groupName,
+    long long          durationSeconds
+) {
+    return m_pimpl->setPlayerGroupExpirationTime(playerUuid, groupName, durationSeconds);
+}
 /**
  * @brief 获取玩家所属的所有权限组及其优先级。
  * @param playerUuid 玩家的 UUID。

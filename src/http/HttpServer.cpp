@@ -412,9 +412,9 @@ void HttpServer::setupRoutes() {
         {drogon::HttpMethod::Get}
     );
 
-    // 获取组的直接父组
+    // 获取组的直接父组 (与前端 /api/groups/{groupName}/parents 匹配)
     drogon::app().registerHandler(
-        "/api/groups/{groupName}/direct-parents",
+        "/api/groups/{groupName}/parents", // 注意这里是 /parents
         [this](
             const drogon::HttpRequestPtr&                         req,
             std::function<void(const drogon::HttpResponsePtr&)>&& callback,
@@ -423,9 +423,9 @@ void HttpServer::setupRoutes() {
             auto        resp         = drogon::HttpResponse::newHttpResponse();
             auto        directParentGroups = mPermissionManager.getDirectParentGroups(groupName);
             Json::Value data;
-            data["directParents"].resize(0);
+            data["parents"].resize(0); // 确保键名与前端期望的 'parents' 匹配
             for (const auto& parent : directParentGroups) {
-                data["directParents"].append(parent);
+                data["parents"].append(parent);
             }
             sendJsonResponse(resp, data);
             callback(resp);
@@ -628,6 +628,83 @@ void HttpServer::setupRoutes() {
             callback(resp);
         },
         {drogon::HttpMethod::Delete}
+    );
+
+    // 获取玩家在组中的过期时间
+    drogon::app().registerHandler(
+        "/api/players/{playerUuid}/groups/{groupName}/expiration",
+        [this](
+            const drogon::HttpRequestPtr&                         req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+            const std::string&                                    playerUuid,
+            const std::string&                                    groupName
+        ) {
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            try {
+                auto expirationTime = mPermissionManager.getPlayerGroupExpirationTime(playerUuid, groupName);
+                Json::Value data;
+                if (expirationTime.has_value()) {
+                    data["expirationTime"] = expirationTime.value();
+                } else {
+                    data["expirationTime"] = -1; // -1 表示永不过期或玩家不在组中
+                }
+                sendJsonResponse(resp, data);
+            } catch (const std::exception& e) {
+                mSelf.getLogger().error("Error getting player group expiration time: %s", e.what());
+                sendErrorResponse(resp, "Internal server error", drogon::k500InternalServerError);
+            }
+            callback(resp);
+        },
+        {drogon::HttpMethod::Get}
+    );
+
+    // 设置玩家在组中的过期时间
+    drogon::app().registerHandler(
+        "/api/players/{playerUuid}/groups/{groupName}/expiration",
+        [this](
+            const drogon::HttpRequestPtr&                         req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+            const std::string&                                    playerUuid,
+            const std::string&                                    groupName
+        ) {
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            try {
+                Json::Value json;
+                if (req->body().empty() || !Json::Reader().parse(std::string(req->body()), json)) {
+                    sendErrorResponse(resp, "Invalid JSON body", drogon::k400BadRequest);
+                    callback(resp);
+                    return;
+                }
+
+                if (!json.isMember("durationSeconds") || !json["durationSeconds"].isInt64()) {
+                    sendErrorResponse(
+                        resp,
+                        "Missing or invalid 'durationSeconds' (must be integer) in request body",
+                        drogon::k400BadRequest
+                    );
+                    callback(resp);
+                    return;
+                }
+                long long durationSeconds = json["durationSeconds"].asInt64();
+
+                if (mPermissionManager.setPlayerGroupExpirationTime(playerUuid, groupName, durationSeconds)) {
+                    Json::Value data;
+                    data["message"] = "Player group expiration time updated successfully";
+                    sendJsonResponse(resp, data);
+                } else {
+                    sendErrorResponse(
+                        resp,
+                        "Failed to set player group expiration time or player/group not found",
+                        drogon::k404NotFound
+                    );
+                }
+            } catch (const std::exception& e) {
+                mSelf.getLogger().error("Error setting player group expiration time: %s", e.what());
+                sendErrorResponse(resp, "Internal server error", drogon::k500InternalServerError);
+            }
+            callback(resp);
+        },
+        {drogon::HttpMethod::Put}
     );
 } // setupRoutes 方法的结束括号
 

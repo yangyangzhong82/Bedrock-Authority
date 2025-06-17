@@ -212,11 +212,31 @@ public:
      */
     bool                      removePlayerFromGroup(const std::string& playerUuid, const std::string& groupId);
     /**
-     * @brief 获取玩家所属的用户组及其详细信息。
+     * @brief 获取玩家在特定用户组中的过期时间戳。
      * @param playerUuid 玩家UUID。
-     * @return 包含玩家所属用户组详细信息的向量。
+     * @param groupId 用户组ID。
+     * @return 如果存在且有过期时间，则返回过期时间戳；如果永不过期或不存在，则返回 std::nullopt。
      */
-    std::vector<GroupDetails> fetchPlayerGroupsWithDetails(const std::string& playerUuid);
+    std::optional<long long> fetchPlayerGroupExpirationTime(const std::string& playerUuid, const std::string& groupId);
+
+    /**
+     * @brief 更新玩家在特定用户组中的过期时间戳。
+     * @param playerUuid 玩家UUID。
+     * @param groupId 用户组ID。
+     * @param expiryTimestamp 新的过期时间戳。std::nullopt 表示永不过期。
+     * @return 如果更新成功，则返回 true；否则返回 false。
+     */
+    bool updatePlayerGroupExpirationTime(
+        const std::string&              playerUuid,
+        const std::string&              groupId,
+        const std::optional<long long>& expiryTimestamp
+    );
+        /**
+         * @brief 获取玩家所属的用户组及其详细信息。
+         * @param playerUuid 玩家UUID。
+         * @return 包含玩家所属用户组详细信息的向量。
+         */
+        std::vector<GroupDetails> fetchPlayerGroupsWithDetails(const std::string& playerUuid);
     /**
      * @brief 获取指定用户组中的所有玩家UUID。
      * @param groupId 用户组ID。

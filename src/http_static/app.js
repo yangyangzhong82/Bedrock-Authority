@@ -39,6 +39,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const deleteGroupBtn = document.getElementById('deleteGroupBtn');
 
     let currentGroup = null; // 当前选中的组名
+    let currentPlayerUuid = null; // 当前选中的玩家UUID
+
+    const playerGroupExpirationTime = document.getElementById('playerGroupExpirationTime');
+    const setExpirationInput = document.getElementById('setExpirationInput');
+    const setExpirationBtn = document.getElementById('setExpirationBtn');
+    const clearExpirationBtn = document.getElementById('clearExpirationBtn');
 
     // 辅助函数：显示消息
     function showMessage(message, isError = false) {
@@ -181,7 +187,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 updatePriorityInput.value = data.priority;
                 fetchGroupPermissions(groupName);
                 fetchParentGroups(groupName);
-                fetchPlayersInGroup(groupName);
+                await fetchPlayersInGroup(groupName); // 确保玩家列表加载完毕
+                // 默认情况下，不选择任何玩家，过期时间显示为N/A
+                currentPlayerUuid = null;
+                playerGroupExpirationTime.textContent = 'N/A';
             } else {
                 showMessage(`获取组 ${groupName} 详情失败: ${data.error || response.statusText}`, true);
                 groupDetailsSection.style.display = 'none';
@@ -256,6 +265,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 data.players.forEach(player => {
                     const li = document.createElement('li');
                     li.textContent = player;
+                    li.dataset.playerUuid = player; // 存储UUID
+                    li.addEventListener('click', () => selectPlayer(player));
                     playersInGroupList.appendChild(li);
                 });
             } else {
@@ -263,6 +274,82 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         } catch (error) {
             showMessage(`获取组 ${groupName} 玩家失败: ${error.message}`, true);
+        }
+    }
+
+    // 选择玩家并显示其在当前组的过期时间
+    async function selectPlayer(playerUuid) {
+        currentPlayerUuid = playerUuid;
+        logDebug(`选中玩家: ${playerUuid}`);
+        await fetchPlayerGroupExpirationTime(currentGroup, playerUuid);
+    }
+
+    // 获取玩家在组中的过期时间
+    async function fetchPlayerGroupExpirationTime(groupName, playerUuid) {
+        if (!groupName || !playerUuid) {
+            playerGroupExpirationTime.textContent = 'N/A';
+            return;
+        }
+        try {
+            logDebug(`获取玩家 ${playerUuid} 在组 ${groupName} 的过期时间...`);
+            const response = await fetchWithTimeout(`/api/players/${playerUuid}/groups/${groupName}/expiration`);
+            const data = await response.json();
+            if (response.ok) {
+                const expirationTime = data.expirationTime;
+                if (expirationTime === -1) {
+                    playerGroupExpirationTime.textContent = '永不过期或不在组中';
+                } else {
+                    const now = Math.floor(Date.now() / 1000); // 当前Unix时间戳（秒）
+                    if (expirationTime <= now) {
+                        playerGroupExpirationTime.textContent = `已过期 (${new Date(expirationTime * 1000).toLocaleString()})`;
+                    } else {
+                        const remainingSeconds = expirationTime - now;
+                        const days = Math.floor(remainingSeconds / (3600 * 24));
+                        const hours = Math.floor((remainingSeconds % (3600 * 24)) / 3600);
+                        const minutes = Math.floor((remainingSeconds % 3600) / 60);
+                        const seconds = remainingSeconds % 60;
+                        playerGroupExpirationTime.textContent = `剩余 ${days}天 ${hours}小时 ${minutes}分钟 ${seconds}秒 (${new Date(expirationTime * 1000).toLocaleString()})`;
+                    }
+                }
+                setExpirationInput.value = ''; // 清空输入框
+                logDebug(`玩家 ${playerUuid} 在组 ${groupName} 的过期时间: ${expirationTime}`);
+            } else {
+                playerGroupExpirationTime.textContent = '获取失败';
+                logDebug(`获取玩家 ${playerUuid} 在组 ${groupName} 的过期时间失败: ${data.error || response.statusText}`);
+                showMessage(`获取玩家过期时间失败: ${data.error || response.statusText}`, true);
+            }
+        } catch (error) {
+            playerGroupExpirationTime.textContent = '获取失败';
+            logDebug(`获取玩家过期时间异常: ${error.message}`);
+            showMessage('获取玩家过期时间失败: ' + error.message, true);
+        }
+    }
+
+    // 设置玩家在组中的过期时间
+    async function setPlayerGroupExpiration(groupName, playerUuid, durationSeconds) {
+        if (!groupName || !playerUuid) {
+            showMessage('请先选择一个组和玩家！', true);
+            return;
+        }
+        try {
+            logDebug(`设置玩家 ${playerUuid} 在组 ${groupName} 的过期时间为 ${durationSeconds} 秒...`);
+            const response = await fetchWithTimeout(`/api/players/${playerUuid}/groups/${groupName}/expiration`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ durationSeconds })
+            });
+            const data = await response.json();
+            if (response.ok) {
+                showMessage(data.message);
+                await fetchPlayerGroupExpirationTime(groupName, playerUuid); // 刷新过期时间显示
+                logDebug(`成功设置玩家 ${playerUuid} 在组 ${groupName} 的过期时间`);
+            } else {
+                logDebug(`设置玩家过期时间失败: ${data.error || response.statusText}`);
+                showMessage(`设置玩家过期时间失败: ${data.error || response.statusText}`, true);
+            }
+        } catch (error) {
+            logDebug(`设置玩家过期时间异常: ${error.message}`);
+            showMessage('设置玩家过期时间失败: ' + error.message, true);
         }
     }
 
@@ -561,6 +648,32 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (error) {
             showMessage('删除组失败: ' + error.message, true);
         }
+    });
+
+    // 事件监听器：设置过期时间
+    setExpirationBtn.addEventListener('click', async () => {
+        if (!currentGroup || !currentPlayerUuid) {
+            showMessage('请先选择一个组和玩家！', true);
+            return;
+        }
+        const durationSeconds = parseInt(setExpirationInput.value.trim());
+        if (isNaN(durationSeconds)) {
+            showMessage('过期时间必须是数字！', true);
+            return;
+        }
+        await setPlayerGroupExpiration(currentGroup, currentPlayerUuid, durationSeconds);
+    });
+
+    // 事件监听器：清除过期时间 (设置为0表示永不过期)
+    clearExpirationBtn.addEventListener('click', async () => {
+        if (!currentGroup || !currentPlayerUuid) {
+            showMessage('请先选择一个组和玩家！', true);
+            return;
+        }
+        if (!confirm(`确定要清除玩家 ${currentPlayerUuid} 在组 ${currentGroup} 的过期时间吗？这将使其永不过期。`)) {
+            return;
+        }
+        await setPlayerGroupExpiration(currentGroup, currentPlayerUuid, 0); // 0 表示永不过期
     });
 
     // 初始加载组

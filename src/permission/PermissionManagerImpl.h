@@ -271,6 +271,12 @@ public:
      */
     bool hasPermission(const std::string& playerUuid, const std::string& permissionNode);
     void runPeriodicCleanup();
+    std::optional<long long> getPlayerGroupExpirationTime(const std::string& playerUuid, const std::string& groupName);
+    bool                     setPlayerGroupExpirationTime(
+                            const std::string& playerUuid,
+                            const std::string& groupName,
+                            long long          durationSeconds
+                        );
 
 private:
     // --- 辅助方法 ---

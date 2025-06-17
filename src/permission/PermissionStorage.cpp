@@ -513,26 +513,31 @@ std::vector<GroupDetails> PermissionStorage::fetchPlayerGroupsWithDetails(const 
     if (!m_db) return {};
     std::vector<GroupDetails> playerGroupDetails;
 
-    // 获取当前时间的Unix时间戳
     long long currentTime =
         std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 
-    // 修改SQL查询以过滤过期的记录
-    // 条件: expiry_timestamp 为 NULL (永不) 或 expiry_timestamp > 当前时间
-    std::string sql = "SELECT pg.id, pg.name, pg.description, pg.priority "
-                      "FROM permission_groups pg "
-                      "JOIN player_groups pgr ON pg.id = pgr.group_id "
-                      "WHERE pgr.player_uuid = ? AND (pgr.expiry_timestamp IS NULL OR pgr.expiry_timestamp > ?);";
+    // 修改SQL查询以选择 expiry_timestamp 并过滤过期的记录
+    std::string sql =
+        "SELECT pg.id, pg.name, pg.description, pg.priority, pgr.expiry_timestamp " // <-- 添加 pgr.expiry_timestamp
+        "FROM permission_groups pg "
+        "JOIN player_groups pgr ON pg.id = pgr.group_id "
+        "WHERE pgr.player_uuid = ? AND (pgr.expiry_timestamp IS NULL OR pgr.expiry_timestamp > ?);";
 
     auto rows = m_db->queryPrepared(sql, {playerUuid, std::to_string(currentTime)});
     for (const auto& row : rows) {
-        if (row.size() >= 4) {
+        if (row.size() >= 5) { // <-- 检查5列
             try {
-                playerGroupDetails.emplace_back(row[0], row[1], row[2], std::stoi(row[3]));
+                int                      priority = std::stoi(row[3]);
+                std::optional<long long> expirationTime;
+                if (!row[4].empty()) { // 检查 expiry_timestamp 是否为 NULL
+                    expirationTime = std::stoll(row[4]);
+                }
+                playerGroupDetails.emplace_back(row[0], row[1], row[2], priority, expirationTime);
             } catch (const std::exception& e) {
                 ::ll::mod::NativeMod::current()->getLogger().warn(
-                    "权限存储: 无法将玩家组 '{}' 的优先级 '{}' 转换为整数: {}",
-                    row[1], row[3], e.what()
+                    "权限存储: 无法解析玩家组 '{}' 的详细信息: {}",
+                    row[1],
+                    e.what()
                 );
             }
         }
@@ -800,6 +805,62 @@ std::vector<std::string> PermissionStorage::deleteExpiredPlayerGroups() {
     return expiredPlayerUuids;
 }
 
+/**
+ * @brief 获取玩家在特定用户组中的过期时间戳。
+ * @param playerUuid 玩家UUID。
+ * @param groupId 用户组ID。
+ * @return 如果存在且有过期时间，则返回过期时间戳；如果永不过期或不存在，则返回 std::nullopt。
+ */
+std::optional<long long>
+PermissionStorage::fetchPlayerGroupExpirationTime(const std::string& playerUuid, const std::string& groupId) {
+    if (!m_db) return std::nullopt;
+    std::string sql  = "SELECT expiry_timestamp FROM player_groups WHERE player_uuid = ? AND group_id = ? LIMIT 1;";
+    auto        rows = m_db->queryPrepared(sql, {playerUuid, groupId});
+
+    if (rows.empty() || rows[0].empty()) {
+        // 玩家不在组中
+        return std::nullopt;
+    }
+    if (rows[0][0].empty()) {
+        // 在组中，但永不过期 (NULL)
+        return std::nullopt;
+    }
+
+    try {
+        return std::stoll(rows[0][0]); // 返回时间戳
+    } catch (const std::exception& e) {
+        ::ll::mod::NativeMod::current()->getLogger().error(
+            "权限存储: 无法将玩家 '{}' 组ID '{}' 的过期时间 '{}' 转换为 long long: {}",
+            playerUuid,
+            groupId,
+            rows[0][0],
+            e.what()
+        );
+        return std::nullopt; // 错误情况
+    }
+}
+/**
+ * @brief 更新玩家在特定用户组中的过期时间戳。
+ * @param playerUuid 玩家UUID。
+ * @param groupId 用户组ID。
+ * @param expiryTimestamp 新的过期时间戳。std::nullopt 表示永不过期。
+ * @return 如果更新成功，则返回 true；否则返回 false。
+ */
+bool PermissionStorage::updatePlayerGroupExpirationTime(
+    const std::string&              playerUuid,
+    const std::string&              groupId,
+    const std::optional<long long>& expiryTimestamp
+) {
+    if (!m_db) return false;
+    std::string sql = "UPDATE player_groups SET expiry_timestamp = ? WHERE player_uuid = ? AND group_id = ?;";
+
+    if (expiryTimestamp.has_value()) {
+        return m_db->executePrepared(sql, {std::to_string(*expiryTimestamp), playerUuid, groupId});
+    } else {
+        // 数据库驱动应能处理 NULL，假设空字符串被解释为 NULL
+        return m_db->executePrepared(sql, {"", playerUuid, groupId});
+    }
+}
 } // namespace internal
 } // namespace permission
 } // namespace BA

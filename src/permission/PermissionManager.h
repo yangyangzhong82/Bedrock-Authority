@@ -262,8 +262,31 @@ public:
      * @param permissionNode 权限节点。
      * @return 如果玩家拥有该权限则返回 true，否则返回 false。
      */
+    /**
+     * @brief 获取玩家在某个权限组中的身份过期时间。
+     * @param playerUuid 玩家的 UUID。
+     * @param groupName 组名称。
+     * @return 可选的 long long，表示 Unix 时间戳（秒）。如果玩家不在组中或身份永不过期，则返回 std::nullopt。
+     */
+    BA_API std::optional<long long>
+           getPlayerGroupExpirationTime(const std::string& playerUuid, const std::string& groupName);
+
+    /**
+     * @brief 设置玩家在某个权限组中的身份过期时间。
+     * @param playerUuid 玩家的 UUID。
+     * @param groupName 组名称。
+     * @param durationSeconds 从现在开始的持续时间（秒）。小于或等于 0 的值表示永不过期。
+     * @return 如果设置成功则返回 true，否则返回 false。
+     */
+    BA_API bool setPlayerGroupExpirationTime(
+        const std::string& playerUuid,
+        const std::string& groupName,
+        long long          durationSeconds
+    );
+
     BA_API bool hasPermission(const std::string& playerUuid, const std::string& permissionNode);
     BA_API void runPeriodicCleanup(); // 新增：一个公共方法来触发清理任务
+    
 
 private:
     // PIMPL: 前向声明实现类

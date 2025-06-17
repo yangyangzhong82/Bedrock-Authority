@@ -871,6 +871,66 @@ void PermissionManager::PermissionManagerImpl::runPeriodicCleanup() {
         logger.debug("权限清理任务：没有过期的记录需要删除。");
     }
 }
+/**
+ * @brief 获取玩家在某个权限组中的身份过期时间。
+ * @param playerUuid 玩家的 UUID。
+ * @param groupName 组名称。
+ * @return 可选的 long long，表示 Unix 时间戳（秒）。如果玩家不在组中或身份永不过期，则返回 std::nullopt。
+ */
+std::optional<long long> PermissionManager::PermissionManagerImpl::getPlayerGroupExpirationTime(
+    const std::string& playerUuid,
+    const std::string& groupName
+) {
+    // 利用现有缓存机制，getPlayerGroupsWithPriorities 现在会返回带有过期时间的数据
+    auto playerGroups = getPlayerGroupsWithPriorities(playerUuid);
+    for (const auto& groupDetails : playerGroups) {
+        if (groupDetails.name == groupName) {
+            return groupDetails.expirationTime; // 直接返回缓存的过期时间
+        }
+    }
+    return std::nullopt; // 玩家不在该组中
+}
+
+/**
+ * @brief 设置玩家在某个权限组中的身份过期时间。
+ * @param playerUuid 玩家的 UUID。
+ * @param groupName 组名称。
+ * @param durationSeconds 从现在开始的持续时间（秒）。小于或等于 0 的值表示永不过期。
+ * @return 如果设置成功则返回 true，否则返回 false。
+ */
+bool PermissionManager::PermissionManagerImpl::setPlayerGroupExpirationTime(
+    const std::string& playerUuid,
+    const std::string& groupName,
+    long long          durationSeconds
+) {
+    string groupId = getCachedGroupId(groupName);
+    if (groupId.empty()) {
+        return false; // 组不存在
+    }
+
+    std::optional<long long> expiryTimestamp;
+    if (durationSeconds > 0) {
+        long long currentTime =
+            std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count();
+        expiryTimestamp = currentTime + durationSeconds;
+    }
+
+    // 调用存储层更新
+    if (m_storage->updatePlayerGroupExpirationTime(playerUuid, groupId, expiryTimestamp)) {
+        // 更新成功后，使该玩家的缓存失效，以便下次获取时能得到最新数据
+        m_invalidator->enqueueTask({CacheInvalidationTaskType::PLAYER_GROUP_CHANGED, playerUuid});
+        return true;
+    }
+
+    // 更新失败通常意味着玩家不在组中。此API不负责添加玩家。
+    ::ll::mod::NativeMod::current()->getLogger().warn(
+        "设置玩家 '{}' 在组 '{}' 的过期时间失败，可能玩家不在此组中。",
+        playerUuid,
+        groupName
+    );
+    return false;
+}
 
 } // namespace permission
 } // namespace BA
