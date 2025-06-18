@@ -14,7 +14,7 @@ namespace BA::Command {
     struct 添加玩家权限组 {
         CommandSelector<Player> playerName;         // 目标玩家选择器
         ll::command::SoftEnum<PermissionGroupEnum> 权限组id;
-        std::string 可选过期时间 = ""; // 新增：可选参数，以分钟为单位，改为字符串类型，并设置默认值
+        float 可选过期时间 = 0.0f; // 新增：可选参数，以小时为单位，改为 float 类型，并设置默认值
     };
     struct 列出玩家权限组 {
         CommandSelector<Player> playerName;         // 目标玩家选择器
@@ -28,7 +28,7 @@ namespace BA::Command {
     struct 离线添加玩家权限组 {
         std::string playerName;         // 目标玩家选择器
         ll::command::SoftEnum<PermissionGroupEnum> 权限组id;
-        std::string 可选过期时间 = ""; // 新增：可选参数，以分钟为单位，改为字符串类型，并设置默认值
+        float 可选过期时间 = 0.0f; // 新增：可选参数，以小时为单位，改为 float 类型，并设置默认值
     };
 
     struct 离线列出玩家权限组节点 {
