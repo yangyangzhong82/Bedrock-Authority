@@ -5,8 +5,12 @@
 #include "permission/AsyncCacheInvalidator.h" // 包含异步缓存失效器
 #include "permission/PermissionCache.h"       // 包含权限缓存
 #include "permission/PermissionStorage.h"     // 包含权限存储
+#include "permission/events/PlayerJoinGroupEvent.h" // 包含玩家加入组事件
+#include "permission/events/PlayerLeaveGroupEvent.h" // 包含玩家离开组事件
+#include "permission/events/GroupPermissionChangeEvent.h" // 包含组权限变更事件
 #include <algorithm>                          // 包含算法库
 #include <functional>                         // 包含函数对象库
+#include <ll/api/event/EventBus.h>            // 包含事件总线
 
 
 
@@ -329,9 +333,27 @@ bool PermissionManager::PermissionManagerImpl::addPermissionToGroup(
 ) {
     string groupId = getCachedGroupId(groupName);
     if (groupId.empty()) return false; // 组不存在
+
+    std::string groupNameForEvent = groupName;
+    std::string permissionRuleForEvent = permissionRule;
+    bool isAddForEvent = true;
+
+    auto beforeEvent = event::GroupPermissionChangeBeforeEvent(groupNameForEvent, permissionRuleForEvent, isAddForEvent);
+    ll::event::EventBus::getInstance().publish(beforeEvent);
+    if (beforeEvent.isCancelled()) {
+        ::ll::mod::NativeMod::current()->getLogger().debug(
+            "组 '{}' 添加权限 '{}' 的事件被取消。",
+            groupName,
+            permissionRule
+        );
+        return false;
+    }
+
     if (m_storage->addPermissionToGroup(groupId, permissionRule)) {
         // 组权限修改后，需要使该组的权限缓存失效
         m_invalidator->enqueueTask({CacheInvalidationTaskType::GROUP_MODIFIED, groupName});
+        
+        ll::event::EventBus::getInstance().publish(event::GroupPermissionChangeAfterEvent(groupNameForEvent, permissionRuleForEvent, isAddForEvent));
         return true;
     }
     return false;
@@ -349,9 +371,27 @@ bool PermissionManager::PermissionManagerImpl::removePermissionFromGroup(
 ) {
     string groupId = getCachedGroupId(groupName);
     if (groupId.empty()) return false; // 组不存在
+
+    std::string groupNameForEvent = groupName;
+    std::string permissionRuleForEvent = permissionRule;
+    bool isAddForEvent = false;
+
+    auto beforeEvent = event::GroupPermissionChangeBeforeEvent(groupNameForEvent, permissionRuleForEvent, isAddForEvent);
+    ll::event::EventBus::getInstance().publish(beforeEvent);
+    if (beforeEvent.isCancelled()) {
+        ::ll::mod::NativeMod::current()->getLogger().debug(
+            "组 '{}' 移除权限 '{}' 的事件被取消。",
+            groupName,
+            permissionRule
+        );
+        return false;
+    }
+
     if (m_storage->removePermissionFromGroup(groupId, permissionRule)) {
         // 组权限修改后，需要使该组的权限缓存失效
         m_invalidator->enqueueTask({CacheInvalidationTaskType::GROUP_MODIFIED, groupName});
+        
+        ll::event::EventBus::getInstance().publish(event::GroupPermissionChangeAfterEvent(groupNameForEvent, permissionRuleForEvent, isAddForEvent));
         return true;
     }
     return false;
@@ -444,12 +484,35 @@ size_t PermissionManager::PermissionManagerImpl::addPermissionsToGroup(
 ) {
     string groupId = getCachedGroupId(groupName);
     if (groupId.empty()) return 0; // 组不存在
-    size_t count = m_storage->addPermissionsToGroup(groupId, permissionRules);
-    if (count > 0) {
+
+    size_t successCount = 0;
+    for (const auto& rule : permissionRules) {
+        std::string groupNameForEvent = groupName;
+        std::string permissionRuleForEvent = rule;
+        bool isAddForEvent = true;
+
+        auto beforeEvent = event::GroupPermissionChangeBeforeEvent(groupNameForEvent, permissionRuleForEvent, isAddForEvent);
+        ll::event::EventBus::getInstance().publish(beforeEvent);
+        if (beforeEvent.isCancelled()) {
+            ::ll::mod::NativeMod::current()->getLogger().debug(
+                "组 '{}' 批量添加权限 '{}' 的事件被取消。",
+                groupName,
+                rule
+            );
+            continue; // 跳过此规则，继续处理下一个
+        }
+
+        if (m_storage->addPermissionToGroup(groupId, rule)) {
+            successCount++;
+            ll::event::EventBus::getInstance().publish(event::GroupPermissionChangeAfterEvent(groupNameForEvent, permissionRuleForEvent, isAddForEvent));
+        }
+    }
+
+    if (successCount > 0) {
         // 组权限修改后，需要使该组的权限缓存失效
         m_invalidator->enqueueTask({CacheInvalidationTaskType::GROUP_MODIFIED, groupName});
     }
-    return count;
+    return successCount;
 }
 
 /**
@@ -464,12 +527,35 @@ size_t PermissionManager::PermissionManagerImpl::removePermissionsFromGroup(
 ) {
     string groupId = getCachedGroupId(groupName);
     if (groupId.empty()) return 0; // 组不存在
-    size_t count = m_storage->removePermissionsFromGroup(groupId, permissionRules);
-    if (count > 0) {
+
+    size_t successCount = 0;
+    for (const auto& rule : permissionRules) {
+        std::string groupNameForEvent = groupName;
+        std::string permissionRuleForEvent = rule;
+        bool isAddForEvent = false;
+
+        auto beforeEvent = event::GroupPermissionChangeBeforeEvent(groupNameForEvent, permissionRuleForEvent, isAddForEvent);
+        ll::event::EventBus::getInstance().publish(beforeEvent);
+        if (beforeEvent.isCancelled()) {
+            ::ll::mod::NativeMod::current()->getLogger().debug(
+                "组 '{}' 批量移除权限 '{}' 的事件被取消。",
+                groupName,
+                rule
+            );
+            continue; // 跳过此规则，继续处理下一个
+        }
+
+        if (m_storage->removePermissionFromGroup(groupId, rule)) {
+            successCount++;
+            ll::event::EventBus::getInstance().publish(event::GroupPermissionChangeAfterEvent(groupNameForEvent, permissionRuleForEvent, isAddForEvent));
+        }
+    }
+
+    if (successCount > 0) {
         // 组权限修改后，需要使该组的权限缓存失效
         m_invalidator->enqueueTask({CacheInvalidationTaskType::GROUP_MODIFIED, groupName});
     }
-    return count;
+    return successCount;
 }
 
 /**
@@ -609,9 +695,37 @@ bool PermissionManager::PermissionManagerImpl::addPlayerToGroup(
         expiryTimestamp = currentTime + durationSeconds;
     }
 
+    // 获取组名用于事件
+    std::string actualGroupName = m_cache->findGroupName(groupId).value_or(groupName); // 尝试从缓存获取，否则使用传入的名称
+
+    // 触发 PlayerJoinGroupBeforeEvent
+    // 为了将参数传递给事件构造函数的引用，需要确保它们是可修改的左值。
+    // 对于 const& 参数，可以直接传递临时对象或右值。
+    // 但对于非 const& 参数，必须是可修改的左值。
+    // 鉴于事件系统通常会复制事件对象，事件内部的引用通常指向事件对象自身的成员。
+    // 这里为了修复编译错误，我们将传入的参数复制到局部变量，然后传递这些局部变量的引用。
+    // 这样可以满足构造函数对非 const 左值引用的要求。
+    std::string playerUuidForEvent = playerUuid;
+    std::string groupNameForEvent = actualGroupName;
+    std::optional<long long> expiryTimestampForEvent = expiryTimestamp;
+
+    auto beforeEvent = event::PlayerJoinGroupBeforeEvent(playerUuidForEvent, groupNameForEvent, expiryTimestampForEvent);
+    ll::event::EventBus::getInstance().publish(beforeEvent);
+    if (beforeEvent.isCancelled()) {
+        ::ll::mod::NativeMod::current()->getLogger().debug(
+            "玩家 '{}' 加入组 '{}' 的事件被取消。",
+            playerUuid,
+            actualGroupName
+        );
+        return false;
+    }
+
     if (m_storage->addPlayerToGroup(playerUuid, groupId, expiryTimestamp)) {
         // 玩家组关系修改后，需要使该玩家的权限和组缓存失效
         m_invalidator->enqueueTask({CacheInvalidationTaskType::PLAYER_GROUP_CHANGED, playerUuid});
+        
+        // 触发 PlayerJoinGroupAfterEvent
+        ll::event::EventBus::getInstance().publish(event::PlayerJoinGroupAfterEvent(playerUuidForEvent, groupNameForEvent, expiryTimestampForEvent));
         return true;
     }
     return false;
@@ -628,9 +742,26 @@ bool PermissionManager::PermissionManagerImpl::removePlayerFromGroup(
 ) {
     string groupId = getCachedGroupId(groupName);
     if (groupId.empty()) return false; // 组不存在
+
+    std::string playerUuidForEvent = playerUuid;
+    std::string groupNameForEvent = groupName;
+
+    auto beforeEvent = event::PlayerLeaveGroupBeforeEvent(playerUuidForEvent, groupNameForEvent);
+    ll::event::EventBus::getInstance().publish(beforeEvent);
+    if (beforeEvent.isCancelled()) {
+        ::ll::mod::NativeMod::current()->getLogger().debug(
+            "玩家 '{}' 离开组 '{}' 的事件被取消。",
+            playerUuid,
+            groupName
+        );
+        return false;
+    }
+
     if (m_storage->removePlayerFromGroup(playerUuid, groupId)) {
         // 玩家组关系修改后，需要使该玩家的权限缓存失效
         m_invalidator->enqueueTask({CacheInvalidationTaskType::PLAYER_GROUP_CHANGED, playerUuid});
+        
+        ll::event::EventBus::getInstance().publish(event::PlayerLeaveGroupAfterEvent(playerUuidForEvent, groupNameForEvent));
         return true;
     }
     return false;

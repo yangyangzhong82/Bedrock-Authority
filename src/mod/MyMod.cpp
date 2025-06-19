@@ -9,6 +9,7 @@
 #include "permission/PermissionManager.h" // 添加 PermissionManager 头文件
 #include <drogon/drogon.h>                // 添加 Drogon 头文件
 #include <exception>
+#include "permission/events/EventTest.h" // Include EventTest.h
 namespace BA {
 
 MyMod& MyMod::getInstance() {
@@ -103,6 +104,10 @@ bool MyMod::enable() {
     }
     getSelf().getLogger().info("Mod enabled");
     BA::Command::RegisterCommands();
+
+    // Register and trigger test events
+    BA::permission::event::registerTestListeners();
+    BA::permission::event::triggerTestEvents();
 
 
     return true;
