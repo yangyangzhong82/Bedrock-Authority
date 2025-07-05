@@ -50,7 +50,7 @@ namespace BA::Command {
             CommandFlagValue::NotCheat //无需作弊
         );
         cmd.alias("权限组"); // 增加别名
-        
+        cmd.alias("ba"); // 增加别名
 
         cmd.overload<创建权限组>()
         .text("创建权限组")
