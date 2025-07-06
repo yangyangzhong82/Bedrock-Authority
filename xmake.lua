@@ -12,8 +12,7 @@ else
 end
 
 add_requires("levibuildscript")
-add_requires("sqlite3")
-add_requires("mariadb-connector-c")
+add_requires("sqlite3"
 add_requires("drogon")
 add_requires("nlohmann_json")
 add_requires("legacyremotecall")
