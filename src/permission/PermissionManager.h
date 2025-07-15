@@ -1,6 +1,6 @@
 #pragma once
 
-#include "permission/PermissionData.h" // 包含公共数据结构
+#include "PermissionData.h" // 包含公共数据结构
 #include <memory>                      // 包含智能指针
 
 namespace BA {
