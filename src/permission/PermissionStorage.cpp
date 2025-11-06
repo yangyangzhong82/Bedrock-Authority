@@ -405,6 +405,17 @@ std::vector<std::string> PermissionStorage::fetchDirectPermissionsOfGroup(const 
     return perms;
 }
 
+/**
+ * @brief 批量获取用户组的直接权限。
+ * @param groupIds 用户组ID向量。
+ * @return 用户组ID到其直接权限规则向量的映射。
+ */
+std::unordered_map<std::string, std::vector<std::string>>
+PermissionStorage::fetchDirectPermissionsOfGroups(const std::vector<std::string>& groupIds) {
+    if (!m_db) return {};
+    return m_db->fetchDirectPermissionsOfGroups(groupIds);
+}
+
 // --- 继承关系管理 ---
 /**
  * @brief 添加用户组继承关系。

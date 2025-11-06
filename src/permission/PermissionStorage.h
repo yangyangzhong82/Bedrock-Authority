@@ -149,6 +149,13 @@ public:
      */
     std::vector<std::string> fetchDirectPermissionsOfGroup(const std::string& groupId);
     /**
+     * @brief 批量获取用户组的直接权限。
+     * @param groupIds 用户组ID向量。
+     * @return 用户组ID到其直接权限规则向量的映射。
+     */
+    std::unordered_map<std::string, std::vector<std::string>>
+    fetchDirectPermissionsOfGroups(const std::vector<std::string>& groupIds);
+    /**
      * @brief 为用户组批量添加权限规则。
      * @param groupId 用户组ID。
      * @param permissionRules 权限规则向量。

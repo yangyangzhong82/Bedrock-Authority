@@ -2,6 +2,7 @@
 
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 namespace BA {
 namespace db {
@@ -57,6 +58,10 @@ public:
 
     // 新增：获取 IN 子句的占位符字符串 (例如：?, ?, ?)
     virtual std::string getInClausePlaceholders(size_t count) const = 0;
+    
+    // 批量接口
+    virtual std::unordered_map<std::string, std::vector<std::string>>
+    fetchDirectPermissionsOfGroups(const std::vector<std::string>& groupIds) = 0;
 };
 
 } // namespace db
