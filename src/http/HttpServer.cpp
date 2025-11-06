@@ -77,7 +77,7 @@ void HttpServer::setupRoutes() {
                 data["groups"].append(group);
             }
             auto resp = drogon::HttpResponse::newHttpResponse();
-            sendJsonResponse(resp, data);
+            sendJsonResponse(resp, data, drogon::k200OK);
             callback(resp);
         },
         {drogon::HttpMethod::Get}
@@ -135,7 +135,7 @@ void HttpServer::setupRoutes() {
             if (mPermissionManager.deleteGroup(groupName)) {
                 Json::Value data;
                 data["message"] = "Group deleted successfully";
-                sendJsonResponse(resp, data);
+                sendJsonResponse(resp, data, drogon::k200OK);
             } else {
                 sendErrorResponse(resp, "Failed to delete group or group not found", drogon::k404NotFound);
             }
@@ -160,7 +160,7 @@ void HttpServer::setupRoutes() {
                 data["name"]        = details.name;
                 data["description"] = details.description;
                 data["priority"]    = details.priority;
-                sendJsonResponse(resp, data);
+                sendJsonResponse(resp, data, drogon::k200OK);
             } else {
                 sendErrorResponse(resp, "Group not found", drogon::k404NotFound);
             }
@@ -196,7 +196,7 @@ void HttpServer::setupRoutes() {
                 if (mPermissionManager.updateGroupDescription(groupName, newDescription)) {
                     Json::Value data;
                     data["message"] = "Group description updated successfully";
-                    sendJsonResponse(resp, data);
+                    sendJsonResponse(resp, data, drogon::k200OK);
                 } else {
                     sendErrorResponse(
                         resp,
@@ -244,7 +244,7 @@ void HttpServer::setupRoutes() {
                 if (mPermissionManager.setGroupPriority(groupName, priority)) {
                     Json::Value data;
                     data["message"] = "Group priority updated successfully";
-                    sendJsonResponse(resp, data);
+                    sendJsonResponse(resp, data, drogon::k200OK);
                 } else {
                     sendErrorResponse(resp, "Failed to set group priority or group not found", drogon::k404NotFound);
                 }
@@ -273,7 +273,7 @@ void HttpServer::setupRoutes() {
                 // getDirectPermissionsOfGroup 返回的是 std::string，不是 CompiledPermissionRule
                 data["permissions"].append(perm);
             }
-            sendJsonResponse(resp, data);
+            sendJsonResponse(resp, data, drogon::k200OK);
             callback(resp);
         },
         {drogon::HttpMethod::Get}
@@ -297,7 +297,7 @@ void HttpServer::setupRoutes() {
                 permJson["state"]   = perm.state;
                 data["permissions"].append(permJson);
             }
-            sendJsonResponse(resp, data);
+            sendJsonResponse(resp, data, drogon::k200OK);
             callback(resp);
         },
         {drogon::HttpMethod::Get}
@@ -374,7 +374,7 @@ void HttpServer::setupRoutes() {
                 if (mPermissionManager.removePermissionFromGroup(groupName, permissionRule)) {
                     Json::Value data;
                     data["message"] = "Permission removed from group successfully";
-                    sendJsonResponse(resp, data);
+                    sendJsonResponse(resp, data, drogon::k200OK);
                 } else {
                     sendErrorResponse(
                         resp,
@@ -406,7 +406,7 @@ void HttpServer::setupRoutes() {
             for (const auto& ancestor : ancestorGroups) {
                 data["ancestors"].append(ancestor);
             }
-            sendJsonResponse(resp, data);
+            sendJsonResponse(resp, data, drogon::k200OK);
             callback(resp);
         },
         {drogon::HttpMethod::Get}
@@ -427,7 +427,7 @@ void HttpServer::setupRoutes() {
             for (const auto& parent : directParentGroups) {
                 data["parents"].append(parent);
             }
-            sendJsonResponse(resp, data);
+            sendJsonResponse(resp, data, drogon::k200OK);
             callback(resp);
         },
         {drogon::HttpMethod::Get}
@@ -504,7 +504,7 @@ void HttpServer::setupRoutes() {
                 if (mPermissionManager.removeGroupInheritance(groupName, parentGroupName)) {
                     Json::Value data;
                     data["message"] = "Group inheritance removed successfully";
-                    sendJsonResponse(resp, data);
+                    sendJsonResponse(resp, data, drogon::k200OK);
                 } else {
                     sendErrorResponse(
                         resp,
@@ -536,7 +536,7 @@ void HttpServer::setupRoutes() {
             for (const auto& player : players) {
                 data["players"].append(player);
             }
-            sendJsonResponse(resp, data);
+            sendJsonResponse(resp, data, drogon::k200OK);
             callback(resp);
         },
         {drogon::HttpMethod::Get}
@@ -613,7 +613,7 @@ void HttpServer::setupRoutes() {
                 if (mPermissionManager.removePlayerFromGroup(playerUuid, groupName)) {
                     Json::Value data;
                     data["message"] = "Player removed from group successfully";
-                    sendJsonResponse(resp, data);
+                    sendJsonResponse(resp, data, drogon::k200OK);
                 } else {
                     sendErrorResponse(
                         resp,
@@ -648,7 +648,7 @@ void HttpServer::setupRoutes() {
                 } else {
                     data["expirationTime"] = -1; // -1 表示永不过期或玩家不在组中
                 }
-                sendJsonResponse(resp, data);
+                sendJsonResponse(resp, data, drogon::k200OK);
             } catch (const std::exception& e) {
                 mSelf.getLogger().error("Error getting player group expiration time: %s", e.what());
                 sendErrorResponse(resp, "Internal server error", drogon::k500InternalServerError);
@@ -690,7 +690,7 @@ void HttpServer::setupRoutes() {
                 if (mPermissionManager.setPlayerGroupExpirationTime(playerUuid, groupName, durationSeconds)) {
                     Json::Value data;
                     data["message"] = "Player group expiration time updated successfully";
-                    sendJsonResponse(resp, data);
+                    sendJsonResponse(resp, data, drogon::k200OK);
                 } else {
                     sendErrorResponse(
                         resp,

@@ -6,7 +6,6 @@
 
 namespace BA::Command {
     void RegisterCommands();
-    enum class CurrencyTypeEnum {};
     // 定义权限组和权限节点的 SoftEnum 类型
     enum class PermissionGroupEnum {};
     enum class PermissionNodeEnum {};

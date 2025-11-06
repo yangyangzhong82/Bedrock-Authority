@@ -3,11 +3,19 @@
 #include "config/Config.h"
 #include "ll/api/mod/NativeMod.h"
 #include "permission/PermissionManager.h"
-#include <drogon/drogon.h>
 #include <memory>
 #include <string>
 #include <thread> 
 
+
+namespace drogon {
+using HttpResponsePtr = std::shared_ptr<class HttpResponse>;
+enum HttpStatusCode;
+} // namespace drogon
+
+namespace Json {
+class Value;
+}
 
 namespace BA {
 namespace http {
@@ -31,12 +39,12 @@ private:
     void sendJsonResponse(
         const drogon::HttpResponsePtr& resp,
         const Json::Value&             data,
-        drogon::HttpStatusCode         code = drogon::k200OK
+        drogon::HttpStatusCode         code
     );
     void sendErrorResponse(
         const drogon::HttpResponsePtr& resp,
         const std::string&             message,
-        drogon::HttpStatusCode         code = drogon::k400BadRequest
+        drogon::HttpStatusCode         code
     );
 };
 

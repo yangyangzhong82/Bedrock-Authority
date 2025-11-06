@@ -134,7 +134,8 @@ void AsyncCacheInvalidator::enqueueTask(CacheInvalidationTask task) {
             } else {
                 m_pendingGroupModifiedTasks.clear(); // ALL 任务包含所有特定组修改
                 m_allGroupsModifiedPending = true;
-                ::ll::mod::NativeMod::current()->getLogger().debug("AsyncCacheInvalidator: 入队 ALL_GROUPS_MODIFIED 任务。"
+                ::ll::mod::NativeMod::current()->getLogger().debug(
+                    "AsyncCacheInvalidator: 入队 ALL_GROUPS_MODIFIED 任务。"
                 );
             }
         } else {
@@ -212,9 +213,14 @@ void AsyncCacheInvalidator::processTasks() {
                         affectedPlayers.size()
                     );
                     for (const auto& playerUuid : affectedPlayers) {
+                        logger.debug(
+                            "AsyncCacheInvalidator: 正在为玩家 '{}' 使缓存失效，因为其所在的组 '{}' 已被修改。",
+                            playerUuid,
+                            groupName
+                        );
                         m_cache.invalidatePlayerPermissions(playerUuid);
-                        logger.debug("AsyncCacheInvalidator: 使玩家 '{}' 的权限缓存失效。", playerUuid);
-                        // 玩家的组列表没有改变，因此此处无需使玩家组缓存失效。
+                        m_cache.invalidatePlayerGroups(playerUuid);
+                        logger.debug("AsyncCacheInvalidator: 已成功使玩家 '{}' 的权限和组缓存失效。", playerUuid);
                     }
                 }
                 break;
