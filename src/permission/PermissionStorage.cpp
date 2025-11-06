@@ -121,6 +121,24 @@ bool PermissionStorage::ensureTables() {
         m_db->getCreateIndexSql("idx_player_groups_uuid", "player_groups", "player_uuid"),
         "在 player_groups.player_uuid 上创建索引"
     );
+    executeAndLog(
+        m_db->getCreateIndexSql("idx_group_permissions_group_id", "group_permissions", "group_id"),
+        "在 group_permissions.group_id 上创建索引"
+    );
+
+    executeAndLog(
+        m_db->getCreateIndexSql("idx_group_inheritance_group_id", "group_inheritance", "group_id"),
+        "在 group_inheritance.group_id 上创建索引"
+    );
+    executeAndLog(
+        m_db->getCreateIndexSql("idx_group_inheritance_parent_group_id", "group_inheritance", "parent_group_id"),
+        "在 group_inheritance.parent_group_id 上创建索引"
+    );
+
+    executeAndLog(
+        m_db->getCreateIndexSql("idx_player_groups_expiry_timestamp", "player_groups", "expiry_timestamp"),
+        "在 player_groups.expiry_timestamp 上创建索引"
+    );
 
     logger.debug("存储: 表格确保完成。");
     return true;
