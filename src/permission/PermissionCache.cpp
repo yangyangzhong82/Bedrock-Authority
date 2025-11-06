@@ -1,6 +1,7 @@
 
-#include "permission/PermissionCache.h" // 包含权限缓存头文件
-#include <queue>                        // 包含队列头文件，用于图遍历
+#include "permission/PermissionCache.h" 
+#include <queue>                        
+#include <chrono>                       
 
 namespace BA {
 namespace permission {
@@ -131,9 +132,21 @@ optional<vector<GroupDetails>> PermissionCache::findPlayerGroups(const string& p
     shared_lock<shared_mutex> lock(m_playerGroupsMutex); // 获取读锁
     auto                      it = m_playerGroupsCache.find(playerUuid); // 在玩家组缓存中查找
     if (it != m_playerGroupsCache.end()) {
-        return it->second; // 返回找到的组详情
+        // 缓存命中，现在检查条目是否过期
+        long long              currentTime = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        vector<GroupDetails>   validGroups;
+        for (const auto& group : it->second) {
+            if (!group.expirationTime.has_value() || group.expirationTime.value() > currentTime) {
+                validGroups.push_back(group);
+            }
+        }
+
+        if (!validGroups.empty()) {
+            return validGroups; // 返回未过期的组
+        }
+        // 如果所有组都已过期，则视为缓存未命中
     }
-    return nullopt; // 未找到则返回空
+    return nullopt; // 未找到或所有组都已过期
 }
 
 // 存储玩家组
