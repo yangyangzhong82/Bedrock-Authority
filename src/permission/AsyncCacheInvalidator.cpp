@@ -121,7 +121,21 @@ void AsyncCacheInvalidator::enqueueTask(CacheInvalidationTask task) {
             } else {
                 m_pendingGroupModifiedTasks.insert(task.data);
                 ::ll::mod::NativeMod::current()->getLogger().debug(
-                    "AsyncCacheInvalidator: 入队 GROUP_MODIFIED 任务，组: '{}'。",
+                    "AsyncCacheInvalidator: 入队 GROUP_MODIFIED 任务，组: \'{}\'.",
+                    task.data
+                );
+            }
+        } else if (task.type == CacheInvalidationTaskType::PLAYER_GROUP_CHANGED) {
+            if (m_pendingPlayerGroupChangedTasks.count(task.data)) {
+                ::ll::mod::NativeMod::current()->getLogger().debug(
+                    "AsyncCacheInvalidator: 合并 PLAYER_GROUP_CHANGED 任务，玩家: \'{}\'.",
+                    task.data
+                );
+                task_merged = true;
+            } else {
+                m_pendingPlayerGroupChangedTasks.insert(task.data);
+                ::ll::mod::NativeMod::current()->getLogger().debug(
+                    "AsyncCacheInvalidator: 入队 PLAYER_GROUP_CHANGED 任务，玩家: \'{}\'.",
                     task.data
                 );
             }
@@ -140,7 +154,7 @@ void AsyncCacheInvalidator::enqueueTask(CacheInvalidationTask task) {
             }
         } else {
             ::ll::mod::NativeMod::current()->getLogger().debug(
-                "AsyncCacheInvalidator: 入队任务，类型: {}, 数据: '{}'。",
+                "AsyncCacheInvalidator: 入队任务，类型: {}, 数据: \'{}\'.",
                 static_cast<int>(task.type),
                 task.data
             );
@@ -186,7 +200,10 @@ void AsyncCacheInvalidator::processTasks() {
             std::unique_lock<std::mutex> pendingLock(m_pendingTasksMutex); // 锁定 m_pendingTasksMutex
             if (task.type == CacheInvalidationTaskType::GROUP_MODIFIED) {
                 m_pendingGroupModifiedTasks.erase(task.data);
-                logger.debug("AsyncCacheInvalidator: 从待处理集合中移除 GROUP_MODIFIED 任务，组: '{}'。", task.data);
+                logger.debug("AsyncCacheInvalidator: 从待处理集合中移除 GROUP_MODIFIED 任务，组: \'{}\'.", task.data);
+            } else if (task.type == CacheInvalidationTaskType::PLAYER_GROUP_CHANGED) {
+                m_pendingPlayerGroupChangedTasks.erase(task.data);
+                logger.debug("AsyncCacheInvalidator: 从待处理集合中移除 PLAYER_GROUP_CHANGED 任务，玩家: \'{}\'.", task.data);
             } else if (task.type == CacheInvalidationTaskType::ALL_GROUPS_MODIFIED) {
                 m_allGroupsModifiedPending = false;
                 logger.debug("AsyncCacheInvalidator: 从待处理集合中移除 ALL_GROUPS_MODIFIED 任务。");
@@ -196,41 +213,41 @@ void AsyncCacheInvalidator::processTasks() {
         try {
             switch (task.type) {
             case CacheInvalidationTaskType::GROUP_MODIFIED: {
-                logger.debug("AsyncCacheInvalidator: 正在处理 GROUP_MODIFIED 任务，组: '{}'。", task.data);
+                logger.debug("AsyncCacheInvalidator: 正在处理 GROUP_MODIFIED 任务，组: \'{}\'.", task.data);
                 // 组的权限或继承关系发生变化。
                 // 这会影响组本身、其所有子组以及这些组中的所有玩家。
                 std::set<std::string> affectedGroups = m_cache.getChildGroupsRecursive(task.data);
                 logger
-                    .debug("AsyncCacheInvalidator: 组 '{}' 及其子组共 {} 个受影响。", task.data, affectedGroups.size());
+                    .debug("AsyncCacheInvalidator: 组 \'{}\' 及其子组共 {} 个受影响。", task.data, affectedGroups.size());
                 for (const auto& groupName : affectedGroups) {
                     m_cache.invalidateGroupPermissions(groupName);
-                    logger.debug("AsyncCacheInvalidator: 使组 '{}' 的权限缓存失效。", groupName);
+                    logger.debug("AsyncCacheInvalidator: 使组 \'{}\' 的权限缓存失效。", groupName);
 
                     std::vector<std::string> affectedPlayers = getAffectedPlayersByGroup(groupName);
                     logger.debug(
-                        "AsyncCacheInvalidator: 组 '{}' 中有 {} 个受影响的玩家。",
+                        "AsyncCacheInvalidator: 组 \'{}\' 中有 {} 个受影响的玩家。",
                         groupName,
                         affectedPlayers.size()
                     );
                     for (const auto& playerUuid : affectedPlayers) {
                         logger.debug(
-                            "AsyncCacheInvalidator: 正在为玩家 '{}' 使缓存失效，因为其所在的组 '{}' 已被修改。",
+                            "AsyncCacheInvalidator: 正在为玩家 \'{}\' 使缓存失效，因为其所在的组 \'{}\' 已被修改。",
                             playerUuid,
                             groupName
                         );
                         m_cache.invalidatePlayerPermissions(playerUuid);
                         m_cache.invalidatePlayerGroups(playerUuid);
-                        logger.debug("AsyncCacheInvalidator: 已成功使玩家 '{}' 的权限和组缓存失效。", playerUuid);
+                        logger.debug("AsyncCacheInvalidator: 已成功使玩家 \'{}\' 的权限和组缓存失效。", playerUuid);
                     }
                 }
                 break;
             }
             case CacheInvalidationTaskType::PLAYER_GROUP_CHANGED: {
-                logger.debug("AsyncCacheInvalidator: 正在处理 PLAYER_GROUP_CHANGED 任务，玩家: '{}'。", task.data);
+                logger.debug("AsyncCacheInvalidator: 正在处理 PLAYER_GROUP_CHANGED 任务，玩家: \'{}\'.", task.data);
                 // 玩家被添加/从组中移除。
                 m_cache.invalidatePlayerPermissions(task.data);
                 m_cache.invalidatePlayerGroups(task.data);
-                logger.debug("AsyncCacheInvalidator: 使玩家 '{}' 的权限和组缓存失效。", task.data);
+                logger.debug("AsyncCacheInvalidator: 使玩家 \'{}\' 的权限和组缓存失效。", task.data);
                 break;
             }
             case CacheInvalidationTaskType::ALL_GROUPS_MODIFIED: {
@@ -276,7 +293,7 @@ std::vector<std::string> AsyncCacheInvalidator::getAffectedPlayersByGroup(const 
     std::set<std::string> allRelatedGroups = m_cache.getChildGroupsRecursive(groupName);
 
     logger.debug(
-        "AsyncCacheInvalidator: 正在查找组 '{}' 的受影响玩家。相关组数量: {}",
+        "AsyncCacheInvalidator: 正在查找组 \'{}\' 的受影响玩家。相关组数量: {}",
         groupName,
         allRelatedGroups.size()
     );
