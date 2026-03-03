@@ -4,6 +4,7 @@
 #include <sqlite3.h>
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 namespace BA {
 namespace db {
@@ -39,6 +40,10 @@ public:
     bool beginTransaction() override;
     bool commit() override;
     bool rollback() override;
+
+    // 批量接口实现
+    std::unordered_map<std::string, std::vector<std::string>>
+    fetchDirectPermissionsOfGroups(const std::vector<std::string>& groupIds) override;
 
 private:
     sqlite3* db_;

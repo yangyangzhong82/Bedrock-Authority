@@ -424,46 +424,56 @@ PermissionManager::PermissionManagerImpl::getPermissionsOfGroup(const std::strin
 
     // 2. 缓存未命中，计算权限
     // 获取所有祖先组的名称
-    set<string> ancestorNames = m_cache->getAllAncestorGroups(groupName);
+    std::set<std::string> ancestorNames = m_cache->getAllAncestorGroups(groupName);
     // 批量获取所有相关组的详情
-    unordered_map<string, GroupDetails> relevantGroupsMap = m_storage->fetchGroupDetailsByNames(ancestorNames);
-    vector<GroupDetails>                relevantGroups;
+    std::unordered_map<std::string, GroupDetails> relevantGroupsMap = m_storage->fetchGroupDetailsByNames(ancestorNames);
+    std::vector<GroupDetails>                relevantGroups;
+    std::vector<std::string>                 relevantGroupIds; // 用于批量查询权限
     for (const auto& name : ancestorNames) {
         auto it = relevantGroupsMap.find(name);
         if (it != relevantGroupsMap.end()) {
             relevantGroups.push_back(it->second);
+            relevantGroupIds.push_back(it->second.id);
         }
     }
 
     // 根据优先级对相关组进行排序
-    sort(relevantGroups.begin(), relevantGroups.end(), [](const auto& a, const auto& b) {
+    std::sort(relevantGroups.begin(), relevantGroups.end(), [](const auto& a, const auto& b) {
         return a.priority < b.priority;
     });
 
+    // 批量获取所有相关组的直接权限
+    std::unordered_map<std::string, std::vector<std::string>> allDirectPermissions =
+        m_storage->fetchDirectPermissionsOfGroups(relevantGroupIds);
+
     // 计算最终的有效权限状态
-    map<string, bool> effectiveState;
+    std::map<std::string, bool> effectiveState;
     for (const auto& group : relevantGroups) {
-        auto rules = m_storage->fetchDirectPermissionsOfGroup(group.id);
-        for (const auto& rule : rules) {
-            bool   isNegated = rule.starts_with('-'); // 检查是否是负向权限
-            string baseName  = isNegated ? rule.substr(1) : rule; // 获取权限基础名称
-            if (baseName.empty()) continue;
-            effectiveState[baseName] = !isNegated; // 设置权限的有效状态
+        // 从批量查询结果中获取当前组的权限
+        auto it = allDirectPermissions.find(group.id);
+        if (it != allDirectPermissions.end()) {
+            const auto& rules = it->second;
+            for (const auto& rule : rules) {
+                bool        isNegated = rule.starts_with("-"); // 检查是否是负向权限
+                std::string baseName  = isNegated ? rule.substr(1) : rule; // 获取权限基础名称
+                if (baseName.empty()) continue;
+                effectiveState[baseName] = !isNegated; // 设置权限的有效状态
+            }
         }
     }
 
     // 将有效权限转换为编译后的权限规则
-    vector<CompiledPermissionRule> finalPerms;
+    std::vector<CompiledPermissionRule> finalPerms;
     for (const auto& [pattern, state] : effectiveState) {
         try {
             finalPerms.emplace_back(pattern, wildcardToRegex(pattern), state);
         } catch (const std::regex_error& e) {
-            ::ll::mod::NativeMod::current()->getLogger().error("权限模式 '{}' 的正则表达式错误：{}", pattern, e.what());
+            ::ll::mod::NativeMod::current()->getLogger().error("权限模式 ", pattern, e.what());
         }
     }
 
     // 根据模式长度对权限进行排序（长模式优先）
-    sort(finalPerms.begin(), finalPerms.end(), [](const auto& a, const auto& b) {
+    std::sort(finalPerms.begin(), finalPerms.end(), [](const auto& a, const auto& b) {
         return a.pattern.length() > b.pattern.length();
     });
 
@@ -850,50 +860,59 @@ PermissionManager::PermissionManagerImpl::getAllPermissionsForPlayer(const std::
 
     // 2.2. 获取所有相关组（直接所属和继承）及其权限
     auto        playerGroups = getPlayerGroupsWithPriorities(playerUuid);
-    set<string> allRelevantGroupNames;
+    std::set<std::string> allRelevantGroupNames;
     for (const auto& group : playerGroups) {
         auto ancestors = m_cache->getAllAncestorGroups(group.name);
         allRelevantGroupNames.insert(ancestors.begin(), ancestors.end());
     }
 
     // 批量获取所有相关组的详情
-    unordered_map<string, GroupDetails> allRelevantGroupsMap = m_storage->fetchGroupDetailsByNames(allRelevantGroupNames);
-    vector<GroupDetails>                allRelevantGroupsDetails;
+    std::unordered_map<std::string, GroupDetails> allRelevantGroupsMap = m_storage->fetchGroupDetailsByNames(allRelevantGroupNames);
+    std::vector<GroupDetails>                allRelevantGroupsDetails;
+    std::vector<std::string>                 allRelevantGroupIds; // 用于批量查询权限
     for (const auto& name : allRelevantGroupNames) {
         auto it = allRelevantGroupsMap.find(name);
         if (it != allRelevantGroupsMap.end()) {
             allRelevantGroupsDetails.push_back(it->second);
+            allRelevantGroupIds.push_back(it->second.id);
         }
     }
 
     // 根据优先级对所有相关组进行排序
-    sort(allRelevantGroupsDetails.begin(), allRelevantGroupsDetails.end(), [](const auto& a, const auto& b) {
+    std::sort(allRelevantGroupsDetails.begin(), allRelevantGroupsDetails.end(), [](const auto& a, const auto& b) {
         return a.priority < b.priority;
     });
 
+    // 批量获取所有相关组的直接权限
+    std::unordered_map<std::string, std::vector<std::string>> allDirectPermissions =
+        m_storage->fetchDirectPermissionsOfGroups(allRelevantGroupIds);
+
     // 应用组权限
     for (const auto& group : allRelevantGroupsDetails) {
-        auto rules = m_storage->fetchDirectPermissionsOfGroup(group.id);
-        for (const auto& rule : rules) {
-            bool   isNegated = rule.starts_with('-');
-            string baseName  = isNegated ? rule.substr(1) : rule;
-            if (baseName.empty()) continue;
-            effectiveState[baseName] = !isNegated;
+        auto it = allDirectPermissions.find(group.id);
+        if (it != allDirectPermissions.end()) {
+            const auto& rules = it->second;
+            for (const auto& rule : rules) {
+                bool        isNegated = rule.starts_with("-");
+                std::string baseName  = isNegated ? rule.substr(1) : rule;
+                if (baseName.empty()) continue;
+                effectiveState[baseName] = !isNegated;
+            }
         }
     }
 
     // 将有效权限转换为编译后的权限规则
-    vector<CompiledPermissionRule> finalPerms;
+    std::vector<CompiledPermissionRule> finalPerms;
     for (const auto& [pattern, state] : effectiveState) {
         try {
             finalPerms.emplace_back(pattern, wildcardToRegex(pattern), state);
         } catch (const std::regex_error& e) {
-            ::ll::mod::NativeMod::current()->getLogger().error("权限模式 '{}' 的正则表达式错误：{}", pattern, e.what());
+            ::ll::mod::NativeMod::current()->getLogger().error("权限模式 ", pattern, e.what());
         }
     }
 
     // 根据模式长度对权限进行排序（长模式优先）
-    sort(finalPerms.begin(), finalPerms.end(), [](const auto& a, const auto& b) {
+    std::sort(finalPerms.begin(), finalPerms.end(), [](const auto& a, const auto& b) {
         return a.pattern.length() > b.pattern.length();
     });
 

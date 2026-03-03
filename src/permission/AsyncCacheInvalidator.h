@@ -74,6 +74,7 @@ private:
     // 任务合并成员
     std::mutex            m_pendingTasksMutex;      /**< 保护待处理任务集合的互斥锁 */
     std::set<std::string> m_pendingGroupModifiedTasks; /**< 待处理的组修改任务集合，用于合并 */
+    std::set<std::string> m_pendingPlayerGroupChangedTasks; /**< 待处理的玩家组改变任务集合，用于合并 */
     bool                  m_allGroupsModifiedPending = false; /**< 标记是否有 ALL_GROUPS_MODIFIED 任务待处理 */
 };
 

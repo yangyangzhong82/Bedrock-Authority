@@ -13,7 +13,6 @@ end
 
 add_requires("levibuildscript")
 add_requires("sqlite3")
-add_requires("drogon")
 add_requires("legacyremotecall")
 
 if not has_config("vs_runtime") then

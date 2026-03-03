@@ -4,7 +4,6 @@
 #include <memory>
 #include "config/Config.h"
 #include "db/IDatabase.h"
-#include "http/HttpServer.h" // Include HttpServer header
 
 #include "permission/CleanupScheduler.h" // 包含 CleanupScheduler 头文件
 
@@ -36,7 +35,6 @@ private:
     ll::mod::NativeMod& mSelf;
     BA::config::Config config_;
     std::unique_ptr<db::IDatabase> db_;
-    std::unique_ptr<http::HttpServer> httpServer_; // Add HttpServer member
     std::unique_ptr<permission::CleanupScheduler> m_cleanupScheduler; // Add CleanupScheduler member
 };
 

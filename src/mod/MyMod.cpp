@@ -2,7 +2,6 @@
 
 #include "command/Command.h"
 #include "db/DatabaseFactory.h"
-#include "http/HttpServer.h" // 添加 HttpServer 头文件
 #include "ll/api/Config.h"
 #include "ll/api/mod/RegisterHelper.h"
 #include "permission/PermissionManager.h" // 添加 PermissionManager 头文件
@@ -65,11 +64,6 @@ bool MyMod::load() {
             }
             getSelf().getLogger().info("PermissionManager initialized with the database connection.");
 
-            // 初始化 HttpServer
-            httpServer_ =
-                std::make_unique<http::HttpServer>(getSelf(), config_, permission::PermissionManager::getInstance());
-            getSelf().getLogger().info("HttpServer initialized.");
-
             // 初始化 CleanupScheduler
             m_cleanupScheduler = std::make_unique<permission::CleanupScheduler>(config_.cleanup_interval_seconds);
             getSelf().getLogger().info("CleanupScheduler initialized with interval {} seconds.", config_.cleanup_interval_seconds);
@@ -94,9 +88,7 @@ bool MyMod::load() {
 bool MyMod::enable() {
     getSelf().getLogger().info("Enabling mod...");
     // Code for enabling the mod goes here.
-    if (httpServer_) {
-        httpServer_->start();
-    }
+ 
     if (m_cleanupScheduler) {
         m_cleanupScheduler->start();
     }
@@ -113,10 +105,7 @@ bool MyMod::enable() {
 
 bool MyMod::disable() {
     getSelf().getLogger().info("Disabling mod...");
-    // 停止 HTTP 服务器
-    if (httpServer_) {
-        httpServer_->stop();
-    }
+
     // 停止清理调度器
     if (m_cleanupScheduler) {
         m_cleanupScheduler->stop();

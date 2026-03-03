@@ -235,5 +235,25 @@ bool SQLiteDatabase::commit() { return execute("COMMIT;"); }
 
 bool SQLiteDatabase::rollback() { return execute("ROLLBACK;"); }
 
+// 批量接口实现
+std::unordered_map<std::string, std::vector<std::string>>
+SQLiteDatabase::fetchDirectPermissionsOfGroups(const std::vector<std::string>& groupIds) {
+    std::unordered_map<std::string, std::vector<std::string>> result;
+    if (groupIds.empty()) {
+        return result;
+    }
+
+    std::string sql = "SELECT group_id, permission FROM group_permissions WHERE group_id IN ("
+                    + getInClausePlaceholders(groupIds.size()) + ");";
+
+    auto rows = queryPrepared(sql, groupIds);
+    for (const auto& row : rows) {
+        if (row.size() == 2) {
+            result[row[0]].push_back(row[1]);
+        }
+    }
+    return result;
+}
+
 } // namespace db
 } // namespace BA
