@@ -3,12 +3,11 @@
 #include "ll/api/mod/NativeMod.h"
 #include "permission/PermissionCache.h"
 #include "permission/PermissionStorage.h"
-#include <set>           // 显式包含 set
-#include <stdexcept>     // 显式包含 stdexcept 用于 std::exception
-#include <string>        // 显式包含 string
-#include <unordered_map> // 显式包含 unordered_map
-#include <utility>       // 显式包含 utility 用于 std::move
-#include <vector>        // 显式包含 vector
+#include <set>          
+#include <string>     
+#include <unordered_map>
+#include <utility>    
+#include <vector>       
 
 
 namespace BA {
@@ -272,7 +271,6 @@ std::vector<std::string> AsyncCacheInvalidator::getAffectedPlayersByGroup(const 
     std::set<std::string> affectedPlayerUuids;
 
     // 从缓存中获取所有后代组（包括组本身）。
-    // 假设继承缓存是可靠的。
     std::set<std::string> allRelatedGroups = m_cache.getChildGroupsRecursive(groupName);
 
     logger.debug(

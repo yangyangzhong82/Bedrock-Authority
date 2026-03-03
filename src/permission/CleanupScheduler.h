@@ -10,7 +10,7 @@
 namespace BA {
 namespace permission {
 
-class PermissionManager; // 前向声明 PermissionManager
+class PermissionManager; 
 
 /**
  * @brief CleanupScheduler 类负责定期触发权限管理器的清理任务。

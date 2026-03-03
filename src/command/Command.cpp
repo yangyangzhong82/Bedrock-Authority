@@ -19,7 +19,7 @@ namespace BA::Command {
     using ll::service::PlayerInfo;
     void RegisterCommands() {
         using namespace ll::command;
-        auto& Registrar = CommandRegistrar::getInstance();
+        auto& Registrar = CommandRegistrar::getInstance(false);
         auto& pm = BA::permission::PermissionManager::getInstance(); // 获取 PermissionManager 实例
 
         // --- 注册/更新 SoftEnum for Permission Groups ---

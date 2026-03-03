@@ -2,17 +2,15 @@
 #include "db/IDatabase.h"
 #include "ll/api/io/Logger.h"
 #include "ll/api/mod/NativeMod.h"
-#include <string> // 显式包含 string
-#include <vector> // 显式包含 vector
-#include <unordered_map> // 显式包含 unordered_map
-#include <set> // 显式包含 set
-#include <stdexcept> // 显式包含 stdexcept 用于 std::exception
+#include <string> 
+#include <vector> 
+#include <unordered_map> 
+#include <set> 
 
 namespace BA {
 namespace permission {
 namespace internal {
 
-// 移除了 'using namespace std;' 以显式限定标准库类型。
 
 /**
  * @brief 权限存储类的构造函数。
@@ -44,6 +42,9 @@ bool PermissionStorage::ensureTables() {
         logger.error("存储: 数据库未初始化。");
         return false;
     }
+
+    // 尝试删除旧的 'permissions' 表，以防旧的结构导致问题
+    executeAndLog("DROP TABLE IF EXISTS permissions;", "删除旧的权限表");
 
     executeAndLog(
         m_db->getCreateTableSql(

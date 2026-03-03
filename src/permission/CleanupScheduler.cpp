@@ -1,7 +1,7 @@
 #include "permission/CleanupScheduler.h"
 #include "ll/api/io/Logger.h"
 #include "ll/api/mod/NativeMod.h"
-#include "permission/PermissionManager.h" // 包含 PermissionManager 头文件
+#include "permission/PermissionManager.h" 
 
 namespace BA {
 namespace permission {

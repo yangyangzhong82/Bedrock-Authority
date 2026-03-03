@@ -1,6 +1,6 @@
 
-#include "permission/PermissionCache.h" // 包含权限缓存头文件
-#include <queue>                        // 包含队列头文件，用于图遍历
+#include "permission/PermissionCache.h" 
+#include <queue>                        
 
 namespace BA {
 namespace permission {
@@ -8,7 +8,7 @@ namespace internal {
 
 using namespace std; // 使用标准命名空间
 
-// --- 组名/ID 缓存 ---
+
 
 // 查找组ID
 // 参数: groupName - 组名

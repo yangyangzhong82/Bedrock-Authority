@@ -1,23 +1,22 @@
 #pragma once
 
-#include "permission/PermissionData.h"    // 包含权限数据结构定义
-#include "permission/PermissionManager.h" // 包含主类的定义以访问其作用域
-#include <memory>                         // 包含智能指针
-#include <regex>                          // 包含正则表达式库
-#include <string>                         // 包含字符串类型
-#include <vector>                         // 包含向量类型
+#include "permission/PermissionData.h"  
+#include "permission/PermissionManager.h" 
+#include <memory>                       
+#include <regex>                          
+#include <string>                         
+#include <vector>                         
 
 
-// 前向声明内部类，以避免在头文件中包含它们的完整定义，减少编译依赖
 namespace BA {
 namespace db {
 class IDatabase; // 数据库接口前向声明
 }
 namespace permission {
 namespace internal {
-class PermissionStorage;     // 权限存储类前向声明
-class PermissionCache;       // 权限缓存类前向声明
-class AsyncCacheInvalidator; // 异步缓存失效器前向声明
+class PermissionStorage;     
+class PermissionCache;       
+class AsyncCacheInvalidator; 
 } // namespace internal
 } // namespace permission
 } // namespace BA

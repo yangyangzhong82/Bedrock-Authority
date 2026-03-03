@@ -14,8 +14,8 @@ namespace BA {
 namespace permission {
 namespace internal {
 
-class PermissionCache;   // 前向声明 PermissionCache 类
-class PermissionStorage; // 前向声明 PermissionStorage 类
+class PermissionCache;  
+class PermissionStorage; 
 
 /**
  * @brief 异步缓存失效器，负责在后台线程中处理缓存失效任务。
@@ -62,8 +62,8 @@ private:
      */
     std::vector<std::string> getAffectedPlayersByGroup(const std::string& groupName);
 
-    PermissionCache&   m_cache;         /**< 权限缓存的引用 */
-    PermissionStorage& m_storage;       /**< 权限存储的引用 */
+    PermissionCache&   m_cache;         
+    PermissionStorage& m_storage;      
 
     std::queue<CacheInvalidationTask> m_taskQueue;     /**< 待处理任务队列 */
     std::mutex                        m_queueMutex;    /**< 保护任务队列的互斥锁 */
