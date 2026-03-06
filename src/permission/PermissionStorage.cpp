@@ -43,9 +43,6 @@ bool PermissionStorage::ensureTables() {
         return false;
     }
 
-    // 尝试删除旧的 'permissions' 表，以防旧的结构导致问题
-    executeAndLog("DROP TABLE IF EXISTS permissions;", "删除旧的权限表");
-
     executeAndLog(
         m_db->getCreateTableSql(
             "permissions",
@@ -56,6 +53,16 @@ bool PermissionStorage::ensureTables() {
                   "default_value INT NOT NULL DEFAULT 0"
         ),
         "创建权限表"
+    );
+
+    // 兼容旧版本：如果 permissions 旧表缺少字段则尝试补列（已存在时可能返回失败日志，可忽略）
+    executeAndLog(
+        m_db->getAddColumnSql("permissions", "description", "TEXT"),
+        "为 permissions 表添加 description 列"
+    );
+    executeAndLog(
+        m_db->getAddColumnSql("permissions", "default_value", "INT NOT NULL DEFAULT 0"),
+        "为 permissions 表添加 default_value 列"
     );
 
     executeAndLog(

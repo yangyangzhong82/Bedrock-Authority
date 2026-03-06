@@ -279,7 +279,7 @@ PostgreSQLDatabase::fetchDirectPermissionsOfGroups(const std::vector<std::string
     }
 
     // PostgreSQL 使用 $1, $2, ... 作为占位符
-    std::string sql = "SELECT group_id, permission FROM group_permissions WHERE group_id IN ("
+    std::string sql = "SELECT group_id, permission_rule FROM group_permissions WHERE group_id IN ("
                     + getInClausePlaceholders(groupIds.size()) + ");";
 
     // PQexecParams 需要 const char* 数组作为参数值

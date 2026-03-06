@@ -243,7 +243,7 @@ SQLiteDatabase::fetchDirectPermissionsOfGroups(const std::vector<std::string>& g
         return result;
     }
 
-    std::string sql = "SELECT group_id, permission FROM group_permissions WHERE group_id IN ("
+    std::string sql = "SELECT group_id, permission_rule FROM group_permissions WHERE group_id IN ("
                     + getInClausePlaceholders(groupIds.size()) + ");";
 
     auto rows = queryPrepared(sql, groupIds);
