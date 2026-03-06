@@ -3,6 +3,12 @@
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+## [0.3.0]
+
+- 适配LL1.9.X
+- 提供无需mysql和pgsql的版本
+- 修复权限节点初始化没有保存的问题
+
 ## [0.2.0]
 
 ### Added
