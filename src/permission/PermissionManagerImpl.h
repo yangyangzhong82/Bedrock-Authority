@@ -10,7 +10,7 @@
 
 namespace BA {
 namespace db {
-class IDatabase; // 数据库接口前向声明
+class IDatabase; 
 }
 namespace permission {
 namespace internal {
@@ -30,9 +30,8 @@ namespace permission {
 // 旨在隐藏实现细节，减少编译依赖，并提高模块化。
 class PermissionManager::PermissionManagerImpl {
 public:
-    // 构造函数
     PermissionManagerImpl();
-    // 析构函数
+
     ~PermissionManagerImpl();
 
     // --- 核心生命周期管理 ---
@@ -297,7 +296,7 @@ private:
      */
     void populateAllCaches();
 
-    // --- 成员变量 ---
+
     // 使用 unique_ptr 来管理内部组件的生命周期，确保资源自动释放
     std::unique_ptr<internal::PermissionStorage>     m_storage;     // 权限存储组件
     std::unique_ptr<internal::PermissionCache>       m_cache;       // 权限缓存组件

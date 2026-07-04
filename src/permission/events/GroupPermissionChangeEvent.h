@@ -11,7 +11,7 @@ class GroupPermissionChangeBeforeEvent final : public ll::event::Cancellable<ll:
 protected:
     std::string& mGroupName;
     std::string& mPermissionRule;
-    bool&        mIsAdd; // true for add, false for remove
+    bool&        mIsAdd; 
 
 public:
     constexpr explicit GroupPermissionChangeBeforeEvent(
@@ -33,7 +33,7 @@ class GroupPermissionChangeAfterEvent final : public ll::event::Event {
 protected:
     std::string const& mGroupName;
     std::string const& mPermissionRule;
-    bool const&        mIsAdd; // true for add, false for remove
+    bool const&        mIsAdd;
 
 public:
     constexpr explicit GroupPermissionChangeAfterEvent(

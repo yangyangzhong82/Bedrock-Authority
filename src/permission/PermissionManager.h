@@ -289,13 +289,10 @@ public:
     
 
 private:
-    // PIMPL: 前向声明实现类
     class PermissionManagerImpl;
     // 使用 unique_ptr 管理实现类的生命周期
     std::unique_ptr<PermissionManagerImpl> m_pimpl;
 
-    // 私有构造函数/析构函数，在 .cpp 文件中定义
-    // 对于使用不完整类型 (incomplete type) 的 std::unique_ptr，这是必需的。
     PermissionManager();
     ~PermissionManager();
 

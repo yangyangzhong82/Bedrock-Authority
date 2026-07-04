@@ -1,14 +1,13 @@
 #pragma once
 
-#include <optional> // 显式包含 optional
+#include <optional> 
 #include <regex>
 #include <set>
 #include <string>
 #include <vector>
 
 
-// Define BA_API based on whether we are building the DLL or using it
-#ifdef BA_EXPORTS // This should be defined by the build system when building the DLL
+#ifdef BA_EXPORTS 
 #ifdef _WIN32
 #define BA_API __declspec(dllexport)
 #else

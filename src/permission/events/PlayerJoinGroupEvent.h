@@ -11,8 +11,7 @@ class PlayerJoinGroupBeforeEvent final : public ll::event::Cancellable<ll::event
 protected:
     std::string&       mPlayerUuid;
     std::string&       mGroupName;
-    std::optional<long long>& mExpirationTime; // Unix timestamp in seconds, nullopt for permanent
-
+    std::optional<long long>& mExpirationTime; 
 public:
     constexpr explicit PlayerJoinGroupBeforeEvent(
         std::string& playerUuid,
@@ -33,7 +32,7 @@ class PlayerJoinGroupAfterEvent final : public ll::event::Event {
 protected:
     std::string const&         mPlayerUuid;
     std::string const&       mGroupName;
-    std::optional<long long> const& mExpirationTime; // Unix timestamp in seconds, nullopt for permanent
+    std::optional<long long> const& mExpirationTime;
 
 public:
     constexpr explicit PlayerJoinGroupAfterEvent(

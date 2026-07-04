@@ -894,7 +894,6 @@ bool PermissionStorage::updatePlayerGroupExpirationTime(
     if (expiryTimestamp.has_value()) {
         return m_db->executePrepared(sql, {std::to_string(*expiryTimestamp), playerUuid, groupId});
     } else {
-        // 数据库驱动应能处理 NULL，假设空字符串被解释为 NULL
         return m_db->executePrepared(sql, {"", playerUuid, groupId});
     }
 }

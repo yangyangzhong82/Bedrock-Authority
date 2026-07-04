@@ -17,7 +17,7 @@
 namespace BA {
 namespace permission {
 
-using namespace std; // 将 using namespace std; 移动到全局作用域
+using namespace std;
 
 // --- 辅助函数：通配符转正则表达式（从原始类中移出） ---
 /**

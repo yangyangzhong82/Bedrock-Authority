@@ -205,7 +205,7 @@ public:
      * @return 如果添加成功，则返回 true；否则返回 false。
      */
     bool                      addPlayerToGroup(const std::string& playerUuid, const std::string& groupId);
-    // 新增：带过期时间戳的版本 (使用 optional 来表示永不过期)
+
     bool addPlayerToGroup(
         const std::string&              playerUuid,
         const std::string&              groupId,
@@ -292,7 +292,7 @@ public:
      * @return 成功移除的玩家用户组关联数量。
      */
     size_t removePlayerFromGroups(const std::string& playerUuid, const std::vector<std::string>& groupIds);
-    // 新增：为后台任务删除所有过期的玩家组关系
+
     std::vector<std::string> deleteExpiredPlayerGroups();
     struct PlayerGroupInfo {
         std::string              groupId;
