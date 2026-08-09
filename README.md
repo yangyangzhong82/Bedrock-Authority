@@ -139,6 +139,7 @@ Bedrock Authority 为开发者提供了丰富的 API，方便与其他插件集�
 3.  进入项目目录并执行构建命令：
     ```bash
     cd Bedrock-Authority
+    xmake f -p windows -a x64 --toolchain=clang-cl
     xmake
     ```
 4.  构建产物将位于 `build` 目录下。
