@@ -11,9 +11,9 @@ add_repositories("yyz-repo https://github.com/yangyangzhong82/xmake-repo.git")
 -- please note that you should add bdslibrary yourself if using dev version
 
 if is_config("target_type", "server") then
-    add_requires("levilamina 26.20.0", {configs = {target_type = "server"}})
+    add_requires("levilamina 26.40.2", {configs = {target_type = "server"}})
 else
-    add_requires("levilamina 26.20.0", {configs = {target_type = "client"}})
+    add_requires("levilamina 26.40.2", {configs = {target_type = "client"}})
 end
 
 add_requires("levibuildscript")
