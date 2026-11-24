@@ -7,6 +7,7 @@
 #include "permission/events/PlayerJoinGroupEvent.h" // 包含玩家加入组事件
 #include "permission/events/PlayerLeaveGroupEvent.h" // 包含玩家离开组事件
 #include "permission/events/GroupPermissionChangeEvent.h" // 包含组权限变更事件
+#include "permission/events/GroupManagementEvents.h"
 #include <algorithm>                          // 包含算法库
 #include <functional>                         // 包含函数对象库
 #include <mutex>
@@ -18,6 +19,20 @@ namespace BA {
 namespace permission {
 
 using namespace std;
+
+namespace {
+template <class E, class... Args>
+bool allowChange(Args&... args) {
+    E before(args...);
+    ll::event::EventBus::getInstance().publish(before);
+    return !before.isCancelled();
+}
+
+template <class E, class... Args>
+void publishChange(const Args&... args) {
+    ll::event::EventBus::getInstance().publish(E(args...));
+}
+} // namespace
 
 // --- 辅助函数：通配符转正则表达式（从原始类中移出） ---
 /**
@@ -86,20 +101,7 @@ bool PermissionManager::PermissionManagerImpl::init(db::IDatabase* db, bool enab
         m_storage->ensureTables();
 
         // 继承图和默认权限均为权威内存索引，即使关闭预热也需全量加载。
-        auto parentToChildren = m_storage->fetchAllInheritance();
-        unordered_map<string, set<string>> childToParents;
-        for (const auto& [parent, children] : parentToChildren) {
-            for (const auto& child : children) {
-                childToParents[child].insert(parent);
-            }
-        }
-        m_cache->populateInheritance(std::move(parentToChildren), std::move(childToParents));
-        m_cache->populateAllPermissionDefaults(m_storage->fetchAllPermissionDefaults());
-
-        // 如果启用预热，则填充组映射和组权限派生缓存
-        if (enableWarmup) {
-            populateAllCaches();
-        }
+        reloadCache(enableWarmup);
 
         m_initialized = true;
         ::ll::mod::NativeMod::current()->getLogger().info("权限管理器初始化成功。");
@@ -121,6 +123,23 @@ void PermissionManager::PermissionManagerImpl::shutdown() {
     }
     m_initialized = false;
     ::ll::mod::NativeMod::current()->getLogger().info("权限管理器已关闭。");
+}
+
+void PermissionManager::PermissionManagerImpl::reloadCache(bool warmup) {
+    std::lock_guard lock(m_graphWriteMutex);
+    auto parentToChildren = m_storage->fetchAllInheritance();
+    unordered_map<string, set<string>> childToParents;
+    for (const auto& [parent, children] : parentToChildren) {
+        for (const auto& child : children) childToParents[child].insert(parent);
+    }
+    auto defaults = m_storage->fetchAllPermissionDefaults();
+    m_cache->populateInheritance(std::move(parentToChildren), std::move(childToParents));
+    m_cache->populateAllPermissionDefaults(std::move(defaults));
+    m_cache->populateAllGroups({});
+    m_cache->invalidateAllPlayerGroups();
+    m_cache->invalidateAllGroupPermissions();
+    m_cache->invalidateAllPlayerPermissions();
+    if (warmup) populateAllCaches();
 }
 
 /**
@@ -265,6 +284,7 @@ bool PermissionManager::PermissionManagerImpl::registerPermission(
     const std::string& description,
     bool               defaultValue
 ) {
+    std::lock_guard lock(m_graphWriteMutex);
     if (m_storage->upsertPermission(name, description, defaultValue)) {
         m_cache->storePermissionDefault(name, defaultValue);
         m_cache->invalidateAllPlayerPermissions();
@@ -300,13 +320,18 @@ bool PermissionManager::PermissionManagerImpl::createGroup(
     const std::string& groupName,
     const std::string& description
 ) {
-    string groupId;
-    if (m_storage->createGroup(groupName, description, groupId) && !groupId.empty()) {
-        m_cache->storeGroup(groupName, groupId);
-        m_cache->invalidateGroupPermissions(groupName);
-        return true;
+    auto name = groupName;
+    auto desc = description;
+    if (!allowChange<event::GroupCreateBeforeEvent>(name, desc)) return false;
+    {
+        std::lock_guard lock(m_graphWriteMutex);
+        string groupId;
+        if (!m_storage->createGroup(name, desc, groupId)) return false;
+        m_cache->storeGroup(name, groupId);
+        m_cache->invalidateGroupPermissions(name);
     }
-    return false;
+    publishChange<event::GroupCreateAfterEvent>(name, desc);
+    return true;
 }
 
 /**
@@ -315,20 +340,19 @@ bool PermissionManager::PermissionManagerImpl::createGroup(
  * @return 如果删除成功则返回 true，否则返回 false。
  */
 bool PermissionManager::PermissionManagerImpl::deleteGroup(const std::string& groupName) {
-    std::lock_guard graphLock(m_graphWriteMutex);
-    string          groupId = getCachedGroupId(groupName);
-    if (groupId.empty()) {
-        return false; // 组不存在
+    auto name = groupName;
+    if (!allowChange<event::GroupDeleteBeforeEvent>(name)) return false;
+    {
+        std::lock_guard lock(m_graphWriteMutex);
+        auto groupId = getCachedGroupId(name);
+        if (groupId.empty() || !m_storage->deleteGroup(groupId)) return false;
+        auto affected = m_cache->getChildGroupsRecursive(name);
+        m_cache->removeGroupFromInheritance(name);
+        m_cache->invalidateGroup(name);
+        m_cache->invalidatePlayerGroupsForGroup(name);
+        invalidateGroupDerivedCaches(affected);
     }
-
-    const auto affectedGroups = m_cache->getChildGroupsRecursive(groupName);
-    if (!m_storage->deleteGroup(groupId)) return false;
-
-    m_cache->removeGroupFromInheritance(groupName);
-    m_cache->invalidateGroup(groupName);
-    // 先失效玩家组缓存，再失效组权限与玩家权限缓存
-    m_cache->invalidatePlayerGroupsForGroup(groupName);
-    invalidateGroupDerivedCaches(affectedGroups);
+    publishChange<event::GroupDeleteAfterEvent>(name);
     return true;
 }
 
@@ -368,11 +392,13 @@ bool PermissionManager::PermissionManagerImpl::updateGroupDescription(
     const std::string& groupName,
     const std::string& newDescription
 ) {
-    if (m_storage->updateGroupDescription(groupName, newDescription)) {
-        m_cache->invalidatePlayerGroupsForGroup(groupName);
-        return true;
-    }
-    return false;
+    auto name = groupName;
+    auto description = newDescription;
+    if (!allowChange<event::GroupDescriptionChangeBeforeEvent>(name, description)) return false;
+    if (!groupExists(name) || !m_storage->updateGroupDescription(name, description)) return false;
+    m_cache->invalidatePlayerGroupsForGroup(name);
+    publishChange<event::GroupDescriptionChangeAfterEvent>(name, description);
+    return true;
 }
 
 /**
@@ -382,6 +408,17 @@ bool PermissionManager::PermissionManagerImpl::updateGroupDescription(
  */
 std::string PermissionManager::PermissionManagerImpl::getGroupDescription(const std::string& groupName) {
     return m_storage->fetchGroupDescription(groupName);
+}
+
+bool PermissionManager::PermissionManagerImpl::changeGroupPermission(string name, string rule, bool adding) {
+    if (!allowChange<event::GroupPermissionChangeBeforeEvent>(name, rule, adding)) return false;
+    auto id = getCachedGroupId(name);
+    if (id.empty()) return false;
+    bool changed = adding ? m_storage->addPermissionToGroup(id, rule) : m_storage->removePermissionFromGroup(id, rule);
+    if (!changed) return false;
+    invalidateGroupDerivedCaches(name);
+    publishChange<event::GroupPermissionChangeAfterEvent>(name, rule, adding);
+    return true;
 }
 
 /**
@@ -394,33 +431,7 @@ bool PermissionManager::PermissionManagerImpl::addPermissionToGroup(
     const std::string& groupName,
     const std::string& permissionRule
 ) {
-    string groupId = getCachedGroupId(groupName);
-    if (groupId.empty()) return false; // 组不存在
-
-    std::string groupNameForEvent = groupName;
-    std::string permissionRuleForEvent = permissionRule;
-    bool isAddForEvent = true;
-
-    auto beforeEvent = event::GroupPermissionChangeBeforeEvent(groupNameForEvent, permissionRuleForEvent, isAddForEvent);
-    ll::event::EventBus::getInstance().publish(beforeEvent);
-    if (beforeEvent.isCancelled()) {
-        ::ll::mod::NativeMod::current()->getLogger().debug(
-            "组 '{}' 添加权限 '{}' 的事件被取消。",
-            groupName,
-            permissionRule
-        );
-        return false;
-    }
-
-    if (m_storage->addPermissionToGroup(groupId, permissionRule)) {
-        invalidateGroupDerivedCaches(groupName);
-
-        ll::event::EventBus::getInstance().publish(
-            event::GroupPermissionChangeAfterEvent(groupNameForEvent, permissionRuleForEvent, isAddForEvent)
-        );
-        return true;
-    }
-    return false;
+    return changeGroupPermission(groupName, permissionRule, true);
 }
 
 /**
@@ -433,33 +444,7 @@ bool PermissionManager::PermissionManagerImpl::removePermissionFromGroup(
     const std::string& groupName,
     const std::string& permissionRule
 ) {
-    string groupId = getCachedGroupId(groupName);
-    if (groupId.empty()) return false; // 组不存在
-
-    std::string groupNameForEvent = groupName;
-    std::string permissionRuleForEvent = permissionRule;
-    bool isAddForEvent = false;
-
-    auto beforeEvent = event::GroupPermissionChangeBeforeEvent(groupNameForEvent, permissionRuleForEvent, isAddForEvent);
-    ll::event::EventBus::getInstance().publish(beforeEvent);
-    if (beforeEvent.isCancelled()) {
-        ::ll::mod::NativeMod::current()->getLogger().debug(
-            "组 '{}' 移除权限 '{}' 的事件被取消。",
-            groupName,
-            permissionRule
-        );
-        return false;
-    }
-
-    if (m_storage->removePermissionFromGroup(groupId, permissionRule)) {
-        invalidateGroupDerivedCaches(groupName);
-
-        ll::event::EventBus::getInstance().publish(
-            event::GroupPermissionChangeAfterEvent(groupNameForEvent, permissionRuleForEvent, isAddForEvent)
-        );
-        return true;
-    }
-    return false;
+    return changeGroupPermission(groupName, permissionRule, false);
 }
 
 /**
@@ -510,35 +495,11 @@ size_t PermissionManager::PermissionManagerImpl::addPermissionsToGroup(
     const std::string&              groupName,
     const std::vector<std::string>& permissionRules
 ) {
-    string groupId = getCachedGroupId(groupName);
-    if (groupId.empty()) return 0; // 组不存在
-
-    size_t successCount = 0;
+    size_t changed = 0;
     for (const auto& rule : permissionRules) {
-        std::string groupNameForEvent = groupName;
-        std::string permissionRuleForEvent = rule;
-        bool isAddForEvent = true;
-
-        auto beforeEvent = event::GroupPermissionChangeBeforeEvent(groupNameForEvent, permissionRuleForEvent, isAddForEvent);
-        ll::event::EventBus::getInstance().publish(beforeEvent);
-        if (beforeEvent.isCancelled()) {
-            ::ll::mod::NativeMod::current()->getLogger().debug(
-                "组 '{}' 批量添加权限 '{}' 的事件被取消。",
-                groupName,
-                rule
-            );
-            continue; // 跳过此规则，继续处理下一个
-        }
-
-        if (m_storage->addPermissionToGroup(groupId, rule)) {
-            successCount++;
-            invalidateGroupDerivedCaches(groupName);
-            ll::event::EventBus::getInstance().publish(
-                event::GroupPermissionChangeAfterEvent(groupNameForEvent, permissionRuleForEvent, isAddForEvent)
-            );
-        }
+        if (addPermissionToGroup(groupName, rule)) ++changed;
     }
-    return successCount;
+    return changed;
 }
 
 /**
@@ -551,35 +512,32 @@ size_t PermissionManager::PermissionManagerImpl::removePermissionsFromGroup(
     const std::string&              groupName,
     const std::vector<std::string>& permissionRules
 ) {
-    string groupId = getCachedGroupId(groupName);
-    if (groupId.empty()) return 0; // 组不存在
-
-    size_t successCount = 0;
+    size_t changed = 0;
     for (const auto& rule : permissionRules) {
-        std::string groupNameForEvent = groupName;
-        std::string permissionRuleForEvent = rule;
-        bool isAddForEvent = false;
-
-        auto beforeEvent = event::GroupPermissionChangeBeforeEvent(groupNameForEvent, permissionRuleForEvent, isAddForEvent);
-        ll::event::EventBus::getInstance().publish(beforeEvent);
-        if (beforeEvent.isCancelled()) {
-            ::ll::mod::NativeMod::current()->getLogger().debug(
-                "组 '{}' 批量移除权限 '{}' 的事件被取消。",
-                groupName,
-                rule
-            );
-            continue; // 跳过此规则，继续处理下一个
-        }
-
-        if (m_storage->removePermissionFromGroup(groupId, rule)) {
-            successCount++;
-            invalidateGroupDerivedCaches(groupName);
-            ll::event::EventBus::getInstance().publish(
-                event::GroupPermissionChangeAfterEvent(groupNameForEvent, permissionRuleForEvent, isAddForEvent)
-            );
-        }
+        if (removePermissionFromGroup(groupName, rule)) ++changed;
     }
-    return successCount;
+    return changed;
+}
+
+bool PermissionManager::PermissionManagerImpl::changeInheritance(string name, string parent, bool adding) {
+    if (!allowChange<event::GroupInheritanceChangeBeforeEvent>(name, parent, adding)) return false;
+    {
+        std::lock_guard lock(m_graphWriteMutex);
+        if (adding && !m_cache->canAddInheritance(name, parent)) return false;
+        auto id = getCachedGroupId(name);
+        auto parentId = getCachedGroupId(parent);
+        if (id.empty() || parentId.empty()) return false;
+        if (adding) {
+            if (!m_storage->addGroupInheritance(id, parentId)) return false;
+            m_cache->addInheritance(name, parent);
+        } else {
+            if (!m_storage->removeGroupInheritance(id, parentId)) return false;
+            m_cache->removeInheritance(name, parent);
+        }
+        invalidateGroupDerivedCaches(name);
+    }
+    publishChange<event::GroupInheritanceChangeAfterEvent>(name, parent, adding);
+    return true;
 }
 
 /**
@@ -592,20 +550,7 @@ bool PermissionManager::PermissionManagerImpl::addGroupInheritance(
     const std::string& groupName,
     const std::string& parentGroupName
 ) {
-    std::lock_guard graphLock(m_graphWriteMutex);
-    if (!m_cache->canAddInheritance(groupName, parentGroupName)) {
-        return false; // 检测到循环或无效继承
-    }
-    string groupId       = getCachedGroupId(groupName);
-    string parentGroupId = getCachedGroupId(parentGroupName);
-    if (groupId.empty() || parentGroupId.empty()) return false; // 组或父组不存在
-
-    if (m_storage->addGroupInheritance(groupId, parentGroupId)) {
-        m_cache->addInheritance(groupName, parentGroupName);
-        invalidateGroupDerivedCaches(groupName);
-        return true;
-    }
-    return false;
+    return changeInheritance(groupName, parentGroupName, true);
 }
 
 /**
@@ -618,17 +563,7 @@ bool PermissionManager::PermissionManagerImpl::removeGroupInheritance(
     const std::string& groupName,
     const std::string& parentGroupName
 ) {
-    std::lock_guard graphLock(m_graphWriteMutex);
-    string          groupId       = getCachedGroupId(groupName);
-    string          parentGroupId = getCachedGroupId(parentGroupName);
-    if (groupId.empty() || parentGroupId.empty()) return false; // 组或父组不存在
-
-    if (m_storage->removeGroupInheritance(groupId, parentGroupId)) {
-        m_cache->removeInheritance(groupName, parentGroupName);
-        invalidateGroupDerivedCaches(groupName);
-        return true;
-    }
-    return false;
+    return changeInheritance(groupName, parentGroupName, false);
 }
 
 /**
@@ -658,12 +593,13 @@ std::vector<std::string> PermissionManager::PermissionManagerImpl::getDirectPare
  * @return 如果设置成功则返回 true，否则返回 false。
  */
 bool PermissionManager::PermissionManagerImpl::setGroupPriority(const std::string& groupName, int priority) {
-    if (m_storage->updateGroupPriority(groupName, priority)) {
-        m_cache->invalidatePlayerGroupsForGroup(groupName);
-        invalidateGroupDerivedCaches(groupName);
-        return true;
-    }
-    return false;
+    auto name = groupName;
+    if (!allowChange<event::GroupPriorityChangeBeforeEvent>(name, priority)) return false;
+    if (!groupExists(name) || !m_storage->updateGroupPriority(name, priority)) return false;
+    m_cache->invalidatePlayerGroupsForGroup(name);
+    invalidateGroupDerivedCaches(name);
+    publishChange<event::GroupPriorityChangeAfterEvent>(name, priority);
+    return true;
 }
 
 /**
@@ -692,53 +628,32 @@ bool PermissionManager::PermissionManagerImpl::addPlayerToGroup(
     const std::string& groupName,
     long long          durationSeconds
 ) {
-    string groupId = getCachedGroupId(groupName);
-    if (groupId.empty()) return false; // 组不存在
-
-    std::optional<long long> expiryTimestamp;
+    std::optional<long long> expiry;
     if (durationSeconds > 0) {
-        long long currentTime =
-            std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
-                .count();
-        expiryTimestamp = currentTime + durationSeconds;
+        expiry = chrono::duration_cast<chrono::seconds>(chrono::system_clock::now().time_since_epoch()).count()
+               + durationSeconds;
     }
-
-    // 获取组名用于事件
-    std::string actualGroupName = m_cache->findGroupName(groupId).value_or(groupName); // 尝试从缓存获取，否则使用传入的名称
-
-    // 触发 PlayerJoinGroupBeforeEvent
-    // 为了将参数传递给事件构造函数的引用，需要确保它们是可修改的左值。
-    // 对于 const& 参数，可以直接传递临时对象或右值。
-    // 但对于非 const& 参数，必须是可修改的左值。
-    // 鉴于事件系统通常会复制事件对象，事件内部的引用通常指向事件对象自身的成员。
-    // 这里为了修复编译错误，我们将传入的参数复制到局部变量，然后传递这些局部变量的引用。
-    // 这样可以满足构造函数对非 const 左值引用的要求。
-    std::string playerUuidForEvent = playerUuid;
-    std::string groupNameForEvent = actualGroupName;
-    std::optional<long long> expiryTimestampForEvent = expiryTimestamp;
-
-    auto beforeEvent = event::PlayerJoinGroupBeforeEvent(playerUuidForEvent, groupNameForEvent, expiryTimestampForEvent);
-    ll::event::EventBus::getInstance().publish(beforeEvent);
-    if (beforeEvent.isCancelled()) {
-        ::ll::mod::NativeMod::current()->getLogger().debug(
-            "玩家 '{}' 加入组 '{}' 的事件被取消。",
-            playerUuid,
-            actualGroupName
-        );
-        return false;
-    }
-
-    if (m_storage->addPlayerToGroup(playerUuid, groupId, expiryTimestamp)) {
-        invalidatePlayerCaches(playerUuid);
-
-        // 触发 PlayerJoinGroupAfterEvent
-        ll::event::EventBus::getInstance().publish(
-            event::PlayerJoinGroupAfterEvent(playerUuidForEvent, groupNameForEvent, expiryTimestampForEvent)
-        );
-        return true;
-    }
-    return false;
+    auto player = playerUuid;
+    auto name = groupName;
+    if (!allowChange<event::PlayerJoinGroupBeforeEvent>(player, name, expiry)) return false;
+    auto id = getCachedGroupId(name);
+    if (id.empty() || !m_storage->addPlayerToGroup(player, id, expiry)) return false;
+    invalidatePlayerCaches(player);
+    publishChange<event::PlayerJoinGroupAfterEvent>(player, name, expiry);
+    return true;
 }
+bool PermissionManager::PermissionManagerImpl::leaveGroup(string player, string name, optional<long long> cutoff) {
+    if (!allowChange<event::PlayerLeaveGroupBeforeEvent>(player, name)) return false;
+    auto id = getCachedGroupId(name);
+    if (id.empty()) return false;
+    bool removed = cutoff ? m_storage->removeExpiredMembership(player, id, *cutoff)
+                          : m_storage->removePlayerFromGroup(player, id);
+    if (!removed) return false;
+    invalidatePlayerCaches(player);
+    publishChange<event::PlayerLeaveGroupAfterEvent>(player, name);
+    return true;
+}
+
 /**
  * @brief 将玩家从组中移除。
  * @param playerUuid 玩家的 UUID。
@@ -749,32 +664,7 @@ bool PermissionManager::PermissionManagerImpl::removePlayerFromGroup(
     const std::string& playerUuid,
     const std::string& groupName
 ) {
-    string groupId = getCachedGroupId(groupName);
-    if (groupId.empty()) return false; // 组不存在
-
-    std::string playerUuidForEvent = playerUuid;
-    std::string groupNameForEvent = groupName;
-
-    auto beforeEvent = event::PlayerLeaveGroupBeforeEvent(playerUuidForEvent, groupNameForEvent);
-    ll::event::EventBus::getInstance().publish(beforeEvent);
-    if (beforeEvent.isCancelled()) {
-        ::ll::mod::NativeMod::current()->getLogger().debug(
-            "玩家 '{}' 离开组 '{}' 的事件被取消。",
-            playerUuid,
-            groupName
-        );
-        return false;
-    }
-
-    if (m_storage->removePlayerFromGroup(playerUuid, groupId)) {
-        invalidatePlayerCaches(playerUuid);
-
-        ll::event::EventBus::getInstance().publish(
-            event::PlayerLeaveGroupAfterEvent(playerUuidForEvent, groupNameForEvent)
-        );
-        return true;
-    }
-    return false;
+    return leaveGroup(playerUuid, groupName, std::nullopt);
 }
 
 /**
@@ -909,6 +799,31 @@ bool PermissionManager::PermissionManagerImpl::hasPermission(
     return false; // 如果权限未注册，则默认拒绝
 }
 
+size_t PermissionManager::PermissionManagerImpl::changeMemberships(
+    const string& playerUuid, const vector<string>& groupNames, bool adding
+) {
+    vector<internal::MembershipChange> pending;
+    for (const auto& group : groupNames) {
+        internal::MembershipChange change{playerUuid, group, {}, std::nullopt};
+        bool allowed = adding
+            ? allowChange<event::PlayerJoinGroupBeforeEvent>(change.playerUuid, change.groupName, change.expiry)
+            : allowChange<event::PlayerLeaveGroupBeforeEvent>(change.playerUuid, change.groupName);
+        if (!allowed) continue;
+        change.groupId = getCachedGroupId(change.groupName);
+        if (!change.groupId.empty()) pending.push_back(std::move(change));
+    }
+    auto committed = m_storage->changeMemberships(pending, adding);
+    for (const auto& change : committed) invalidatePlayerCaches(change.playerUuid);
+    for (const auto& change : committed) {
+        if (adding) {
+            publishChange<event::PlayerJoinGroupAfterEvent>(change.playerUuid, change.groupName, change.expiry);
+        } else {
+            publishChange<event::PlayerLeaveGroupAfterEvent>(change.playerUuid, change.groupName);
+        }
+    }
+    return committed.size();
+}
+
 /**
  * @brief 批量将玩家添加到多个组。
  * @param playerUuid 玩家的 UUID。
@@ -919,19 +834,7 @@ size_t PermissionManager::PermissionManagerImpl::addPlayerToGroups(
     const std::string&              playerUuid,
     const std::vector<std::string>& groupNames
 ) {
-    if (groupNames.empty()) return 0;
-    vector<pair<string, string>> groupInfos;
-    for (const auto& name : groupNames) {
-        string id = getCachedGroupId(name);
-        if (!id.empty()) {
-            groupInfos.emplace_back(name, id);
-        }
-    }
-    size_t count = m_storage->addPlayerToGroups(playerUuid, groupInfos);
-    if (count > 0) {
-        invalidatePlayerCaches(playerUuid);
-    }
-    return count;
+    return changeMemberships(playerUuid, groupNames, true);
 }
 
 /**
@@ -944,33 +847,14 @@ size_t PermissionManager::PermissionManagerImpl::removePlayerFromGroups(
     const std::string&              playerUuid,
     const std::vector<std::string>& groupNames
 ) {
-    if (groupNames.empty()) return 0;
-    vector<string> groupIds;
-    for (const auto& name : groupNames) {
-        string id = getCachedGroupId(name);
-        if (!id.empty()) {
-            groupIds.push_back(id);
-        }
-    }
-    size_t count = m_storage->removePlayerFromGroups(playerUuid, groupIds);
-    if (count > 0) {
-        invalidatePlayerCaches(playerUuid);
-    }
-    return count;
+    return changeMemberships(playerUuid, groupNames, false);
 }
 
 // 新增清理方法
 void PermissionManager::PermissionManagerImpl::runPeriodicCleanup() {
-    auto& logger = ::ll::mod::NativeMod::current()->getLogger();
-    logger.debug("正在运行定期的权限清理任务...");
-    std::vector<std::string> affectedPlayers = m_storage->deleteExpiredPlayerGroups();
-    if (!affectedPlayers.empty()) {
-        logger.debug("权限清理任务完成。已删除 {} 条过期记录，并使受影响玩家的缓存失效。", affectedPlayers.size());
-        for (const auto& playerUuid : affectedPlayers) {
-            invalidatePlayerCaches(playerUuid);
-        }
-    } else {
-        logger.debug("权限清理任务：没有过期的记录需要删除。");
+    auto cutoff = chrono::duration_cast<chrono::seconds>(chrono::system_clock::now().time_since_epoch()).count();
+    for (const auto& [player, group] : m_storage->fetchExpiredMemberships(cutoff)) {
+        leaveGroup(player, group, cutoff);
     }
 }
 /**

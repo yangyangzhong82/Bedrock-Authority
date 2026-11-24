@@ -222,6 +222,7 @@ bool MySQLDatabase::executePrepared(const std::string& sql, const SqlParams& par
         std::string error_msg = mysql_stmt_error(stmt); // 获取错误消息
         if (error_code == 1062) { // ER_DUP_ENTRY 表示重复键
             logger.warn("MySQL executePrepared 重复条目已忽略: {}", error_msg);
+            lastWriteChanged_ = false;
             // 将重复键错误视为 INSERT IGNORE 语义的成功
             mysql_stmt_close(stmt);
             return true; // 即使执行因重复而失败，也返回 true
@@ -232,6 +233,7 @@ bool MySQLDatabase::executePrepared(const std::string& sql, const SqlParams& par
         }
     }
 
+    lastWriteChanged_ = mysql_stmt_affected_rows(stmt) > 0;
     mysql_stmt_close(stmt);
     logger.debug("MySQL executePrepared 成功");
     return true;
@@ -240,6 +242,7 @@ bool MySQLDatabase::executePrepared(const std::string& sql, const SqlParams& par
 
 std::vector<std::vector<std::string>> MySQLDatabase::queryPrepared(const std::string& sql, const SqlParams& params) {
     std::lock_guard lock(connectionMutex_);
+    lastQuerySucceeded_ = false;
     if (!ensureConnection()) return {};
     auto& logger = ll::mod::NativeMod::current()->getLogger();
     logger.debug("MySQL 查询预处理语句: {}", sql);
@@ -335,7 +338,8 @@ std::vector<std::vector<std::string>> MySQLDatabase::queryPrepared(const std::st
 
 
     // 获取行
-    while (mysql_stmt_fetch(stmt) == 0) { // 0 表示成功
+    int fetchStatus;
+    while ((fetchStatus = mysql_stmt_fetch(stmt)) == 0) { // 0 表示成功
         std::vector<std::string> rowVec;
         rowVec.reserve(num_fields);
         for (int i = 0; i < num_fields; ++i) {
@@ -371,6 +375,7 @@ std::vector<std::vector<std::string>> MySQLDatabase::queryPrepared(const std::st
         // 结果可能部分填充
     }
 
+    lastQuerySucceeded_ = fetchStatus == MYSQL_NO_DATA;
     mysql_free_result(meta_result);
     mysql_stmt_close(stmt);
     logger.debug("MySQL queryPrepared 返回 {} 行", result.size());

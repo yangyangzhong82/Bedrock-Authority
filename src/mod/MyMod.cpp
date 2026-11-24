@@ -6,7 +6,6 @@
 #include "ll/api/mod/RegisterHelper.h"
 #include "permission/PermissionManager.h" // 添加 PermissionManager 头文件
 #include <exception>
-#include "permission/events/EventTest.h" // Include EventTest.h
 namespace BA {
 
 MyMod& MyMod::getInstance() {
@@ -85,6 +84,28 @@ bool MyMod::load() {
     return true;
 }
 
+bool MyMod::reload() {
+    try {
+        const auto content = ll::file_utils::readFile(getSelf().getConfigDir() / "config.json");
+        if (!content) return false;
+        config::Config next;
+        auto data = ll::config::ParseType<nlohmann::ordered_json>{}(*content);
+        ll::reflection::deserialize(next, data).value();
+        if (next.cleanup_interval_seconds <= 0) {
+            getSelf().getLogger().error("cleanup_interval_seconds 必须大于零。");
+            return false;
+        }
+        permission::PermissionManager::getInstance().reloadCache(next.enable_cache_warmup);
+        m_cleanupScheduler->setInterval(next.cleanup_interval_seconds);
+        config_.cleanup_interval_seconds = next.cleanup_interval_seconds;
+        config_.enable_cache_warmup = next.enable_cache_warmup;
+        return true;
+    } catch (const std::exception& e) {
+        getSelf().getLogger().error("重载权限配置失败：{}", e.what());
+        return false;
+    }
+}
+
 bool MyMod::enable() {
     getSelf().getLogger().info("Enabling mod...");
     // Code for enabling the mod goes here.
@@ -94,11 +115,6 @@ bool MyMod::enable() {
     }
     getSelf().getLogger().info("Mod enabled");
     BA::Command::RegisterCommands();
-
-    // Register and trigger test events
-    BA::permission::event::registerTestListeners();
-    BA::permission::event::triggerTestEvents();
-
 
     return true;
 }

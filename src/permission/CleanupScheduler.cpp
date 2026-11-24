@@ -58,6 +58,14 @@ void CleanupScheduler::stop() {
     ::ll::mod::NativeMod::current()->getLogger().info("CleanupScheduler: 已停止。");
 }
 
+void CleanupScheduler::setInterval(long long seconds) {
+    {
+        std::lock_guard lock(m_mutex);
+        m_intervalSeconds = seconds;
+    }
+    m_condition.notify_one();
+}
+
 /**
  * @brief 工作线程函数，负责周期性地调用清理任务。
  */
@@ -78,7 +86,10 @@ void CleanupScheduler::run() {
 
         // 等待下一个周期，或者被停止信号唤醒
         std::unique_lock<std::mutex> lock(m_mutex);
-        m_condition.wait_for(lock, std::chrono::seconds(m_intervalSeconds), [this] { return !m_running; });
+        auto interval = m_intervalSeconds;
+        m_condition.wait_for(lock, std::chrono::seconds(interval), [this, interval] {
+            return !m_running || m_intervalSeconds != interval;
+        });
     }
     logger.debug("CleanupScheduler: 工作线程退出。");
 }

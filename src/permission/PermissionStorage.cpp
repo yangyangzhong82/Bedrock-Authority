@@ -224,7 +224,7 @@ std::unordered_map<std::string, bool> PermissionStorage::fetchAllPermissionDefau
     if (!m_db) return {};
     std::unordered_map<std::string, bool> defaults;
     std::string                      sql  = "SELECT name, default_value FROM permissions;";
-    auto                        rows = m_db->queryPrepared(sql, {});
+    auto                        rows = m_db->queryChecked(sql, {});
     for (const auto& row : rows) {
         if (row.size() >= 2 && !row[0].empty() && !row[1].empty()) {
             try {
@@ -255,7 +255,7 @@ bool PermissionStorage::createGroup(
 ) {
     if (!m_db) return false;
     std::string insertSql = m_db->getInsertOrIgnoreSql("permission_groups", "name, description", "?, ?", "name");
-    m_db->executePrepared(insertSql, {groupName, description}); // 忽略结果，只尝试执行。
+    if (!m_db->executeChanged(insertSql, {groupName, description})) return false;
     outGroupId = fetchGroupIdByName(groupName);
     return !outGroupId.empty();
 }
@@ -269,7 +269,7 @@ bool PermissionStorage::deleteGroup(const std::string& groupId) {
     if (!m_db) return false;
     // 外键上的 ON DELETE CASCADE 将处理相关表的清理。
     std::string sql = "DELETE FROM permission_groups WHERE id = ?;";
-    return m_db->executePrepared(sql, {groupId});
+    return m_db->executeChanged(sql, {groupId});
 }
 
 /**
@@ -407,7 +407,7 @@ bool PermissionStorage::addPermissionToGroup(const std::string& groupId, const s
         "?, ?",
         "group_id, permission_rule"
     );
-    return m_db->executePrepared(insertSql, {groupId, permissionRule});
+    return m_db->executeChanged(insertSql, {groupId, permissionRule});
 }
 
 /**
@@ -419,7 +419,7 @@ bool PermissionStorage::addPermissionToGroup(const std::string& groupId, const s
 bool PermissionStorage::removePermissionFromGroup(const std::string& groupId, const std::string& permissionRule) {
     if (!m_db) return false;
     std::string sql = "DELETE FROM group_permissions WHERE group_id = ? AND permission_rule = ?;";
-    return m_db->executePrepared(sql, {groupId, permissionRule});
+    return m_db->executeChanged(sql, {groupId, permissionRule});
 }
 
 /**
@@ -463,7 +463,7 @@ bool PermissionStorage::addGroupInheritance(const std::string& groupId, const st
         "?, ?",
         "group_id, parent_group_id"
     );
-    return m_db->executePrepared(insertSql, {groupId, parentGroupId});
+    return m_db->executeChanged(insertSql, {groupId, parentGroupId});
 }
 
 /**
@@ -475,7 +475,7 @@ bool PermissionStorage::addGroupInheritance(const std::string& groupId, const st
 bool PermissionStorage::removeGroupInheritance(const std::string& groupId, const std::string& parentGroupId) {
     if (!m_db) return false;
     std::string sql = "DELETE FROM group_inheritance WHERE group_id = ? AND parent_group_id = ?;";
-    return m_db->executePrepared(sql, {groupId, parentGroupId});
+    return m_db->executeChanged(sql, {groupId, parentGroupId});
 }
 
 /**
@@ -489,7 +489,7 @@ std::unordered_map<std::string, std::set<std::string>> PermissionStorage::fetchA
                                               "FROM group_inheritance gi "
                                               "JOIN permission_groups T1 ON gi.group_id = T1.id "
                                               "JOIN permission_groups T2 ON gi.parent_group_id = T2.id;";
-    auto                               rows = m_db->queryPrepared(sql, {});
+    auto                               rows = m_db->queryChecked(sql, {});
     for (const auto& row : rows) {
         if (row.size() >= 2 && !row[0].empty() && !row[1].empty()) {
             parentToChildren[row[1]].insert(row[0]); // parent -> set<child>
@@ -543,7 +543,7 @@ bool PermissionStorage::addPlayerToGroup(
 bool PermissionStorage::removePlayerFromGroup(const std::string& playerUuid, const std::string& groupId) {
     if (!m_db) return false;
     std::string sql = "DELETE FROM player_groups WHERE player_uuid = ? AND group_id = ?;";
-    return m_db->executePrepared(sql, {playerUuid, groupId});
+    return m_db->executeChanged(sql, {playerUuid, groupId});
 }
 
 /**
@@ -727,55 +727,25 @@ size_t PermissionStorage::removePermissionsFromGroup(
     return successCount;
 }
 
-/**
- * @brief 将玩家批量添加到多个用户组。
- * @param playerUuid 玩家UUID。
- * @param groupInfos 包含用户组名称和ID的pair向量。
- * @return 成功添加的玩家用户组关联数量。
- */
-size_t PermissionStorage::addPlayerToGroups(const std::string& playerUuid, const std::vector<std::pair<std::string, std::string>>& groupInfos) {
-    if (!m_db || groupInfos.empty()) return 0;
+std::vector<MembershipChange> PermissionStorage::changeMemberships(
+    const std::vector<MembershipChange>& changes, bool adding
+) {
+    std::vector<MembershipChange> committed;
+    if (changes.empty()) return committed;
     db::IDatabase::Transaction transaction(*m_db);
-    if (!transaction) return 0;
-
-    size_t successCount = 0;
-    std::string insertSql =
-        m_db->getInsertOrIgnoreSql("player_groups", "player_uuid, group_id", "?, ?", "player_uuid, group_id");
-
-    for (const auto& groupInfo : groupInfos) {
-        // 这里我们假设第二个元素是 groupId
-        if (m_db->executePrepared(insertSql, {playerUuid, groupInfo.second})) {
-            successCount++;
+    if (!transaction) return {};
+    auto sql = adding ? m_db->getInsertOrIgnoreSql(
+        "player_groups", "player_uuid, group_id, expiry_timestamp", "?, ?, ?", "player_uuid, group_id"
+    ) : "DELETE FROM player_groups WHERE player_uuid = ? AND group_id = ?;";
+    for (const auto& change : changes) {
+        db::SqlParams params{change.playerUuid, change.groupId};
+        if (adding) {
+            params.push_back(change.expiry ? std::optional(std::to_string(*change.expiry)) : std::nullopt);
         }
+        if (m_db->executeChanged(sql, params)) committed.push_back(change);
     }
-
-    if (!transaction.commit()) return 0;
-    return successCount;
-}
-
-/**
- * @brief 将玩家从多个用户组中批量移除。
- * @param playerUuid 玩家UUID。
- * @param groupIds 用户组ID向量。
- * @return 成功移除的玩家用户组关联数量。
- */
-size_t
-PermissionStorage::removePlayerFromGroups(const std::string& playerUuid, const std::vector<std::string>& groupIds) {
-    if (!m_db || groupIds.empty()) return 0;
-    db::IDatabase::Transaction transaction(*m_db);
-    if (!transaction) return 0;
-
-    size_t successCount = 0;
-    std::string deleteSql    = "DELETE FROM player_groups WHERE player_uuid = ? AND group_id = ?;";
-
-    for (const auto& groupId : groupIds) {
-        if (m_db->executePrepared(deleteSql, {playerUuid, groupId})) {
-            successCount++;
-        }
-    }
-
-    if (!transaction.commit()) return 0;
-    return successCount;
+    if (!transaction.commit()) return {};
+    return committed;
 }
 
 /**
@@ -812,31 +782,23 @@ std::unordered_map<std::string, std::string> PermissionStorage::fetchGroupNamesB
     return groupNameMap;
 }
 
-std::vector<std::string> PermissionStorage::deleteExpiredPlayerGroups() {
-    if (!m_db) return {};
+std::vector<std::pair<std::string, std::string>> PermissionStorage::fetchExpiredMemberships(long long cutoff) {
+    auto rows = m_db->queryPrepared(
+        "SELECT p.player_uuid, g.name FROM player_groups p JOIN permission_groups g ON g.id = p.group_id "
+        "WHERE p.expiry_timestamp <= ?", {std::to_string(cutoff)}
+    );
+    std::vector<std::pair<std::string, std::string>> memberships;
+    for (const auto& row : rows) memberships.emplace_back(row[0], row[1]);
+    return memberships;
+}
 
-    long long currentTime =
-        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-
-    // 1. 查询所有过期的玩家 UUID
-    std::vector<std::string> expiredPlayerUuids;
-    std::string selectSql = "SELECT DISTINCT player_uuid FROM player_groups WHERE expiry_timestamp IS NOT NULL AND expiry_timestamp <= ?;";
-    auto rows = m_db->queryPrepared(selectSql, {std::to_string(currentTime)});
-    for (const auto& row : rows) {
-        if (!row.empty()) {
-            expiredPlayerUuids.push_back(row[0]);
-        }
-    }
-
-    // 2. 删除过期的玩家组记录
-    std::string deleteSql = "DELETE FROM player_groups WHERE expiry_timestamp IS NOT NULL AND expiry_timestamp <= ?;";
-    if (m_db->executePrepared(deleteSql, {std::to_string(currentTime)})) {
-        ::ll::mod::NativeMod::current()->getLogger().debug("已执行过期的玩家组清理，删除了 {} 条记录。", expiredPlayerUuids.size());
-    } else {
-        ::ll::mod::NativeMod::current()->getLogger().warn("执行过期的玩家组清理失败。");
-    }
-
-    return expiredPlayerUuids;
+bool PermissionStorage::removeExpiredMembership(
+    const std::string& playerUuid, const std::string& groupId, long long cutoff
+) {
+    return m_db->executeChanged(
+        "DELETE FROM player_groups WHERE player_uuid = ? AND group_id = ? AND expiry_timestamp <= ?",
+        {playerUuid, groupId, std::to_string(cutoff)}
+    );
 }
 
 /**

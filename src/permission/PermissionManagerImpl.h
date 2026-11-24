@@ -50,6 +50,7 @@ public:
      * @brief 关闭权限管理器实现。
      */
     void shutdown();
+    void reloadCache(bool warmup);
 
     // --- 权限管理功能 ---
     /**
@@ -298,6 +299,10 @@ private:
      *        此方法会从存储层加载数据并填充到缓存中，以提高后续查询性能。
      */
     void populateAllCaches();
+    bool changeGroupPermission(std::string name, std::string rule, bool adding);
+    bool changeInheritance(std::string name, std::string parent, bool adding);
+    bool leaveGroup(std::string player, std::string name, std::optional<long long> cutoff);
+    size_t changeMemberships(const std::string& playerUuid, const std::vector<std::string>& groupNames, bool adding);
     std::shared_ptr<const internal::PlayerPermissionRules> getPlayerPermissionRules(const std::string& playerUuid);
     std::vector<CompiledPermissionRule> compilePermissionsForGroups(
         const std::set<std::string>& relevantGroupNames,

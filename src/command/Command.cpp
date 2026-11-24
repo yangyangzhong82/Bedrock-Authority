@@ -1,22 +1,98 @@
-#include "mc/server/commands/Command.h"
 #include "command/Command.h"
+#include "mod/MyMod.h"
+#include "permission/PermissionManager.h"
 #include "ll/api/command/CommandHandle.h"
 #include "ll/api/command/CommandRegistrar.h"
 #include "ll/api/command/EnumName.h"
 #include "ll/api/command/SoftEnum.h"
 #include "ll/api/service/PlayerInfo.h"
-#include "mc/platform/UUID.h"
 #include "mc/server/commands/CommandFlag.h"
-#include "mc/server/commands/CommandOrigin.h"
 #include "mc/server/commands/CommandOriginType.h"
 #include "mc/server/commands/CommandOutput.h"
 #include "mc/server/commands/CommandPermissionLevel.h"
+#include "mc/server/commands/CommandSelector.h"
 #include "mc/world/actor/player/Player.h"
-#include "permission/PermissionManager.h"
-#include <cstddef>
-#include <string>
-#include <utility>
-#include <vector>
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <fmt/ranges.h>
+#include <limits>
+
+namespace BA::Command {
+enum class PermissionGroupEnum {};
+enum class PermissionNodeEnum {};
+using Group = ll::command::SoftEnum<PermissionGroupEnum>;
+using Node = ll::command::SoftEnum<PermissionNodeEnum>;
+using Online = CommandSelector<Player>;
+
+struct NoArgs { static void bind(auto&) {} };
+struct GroupName {
+    std::string group;
+    static void bind(auto& o) { (void)o.required("group"); }
+};
+struct GroupArg {
+    Group group;
+    static void bind(auto& o) { (void)o.required("group"); }
+};
+struct Rule {
+    Group group;
+    Node node;
+    static void bind(auto& o) { (void)o.required("group").required("node"); }
+};
+struct Inheritance {
+    Group child;
+    Group parent;
+    static void bind(auto& o) { (void)o.required("child").required("parent"); }
+};
+struct Priority {
+    Group group;
+    int priority;
+    static void bind(auto& o) { (void)o.required("group").required("priority"); }
+};
+struct Description {
+    Group group;
+    std::string description;
+    static void bind(auto& o) { (void)o.required("group").required("description"); }
+};
+struct RegisterNode {
+    std::string node;
+    std::string description;
+    bool defaultValue = false;
+    static void bind(auto& o) { (void)o.required("node").optional("description").optional("defaultValue"); }
+};
+template <class T>
+struct Target {
+    T player;
+    static void bind(auto& o) { (void)o.required("player"); }
+};
+using OnlineTarget = Target<Online>;
+using NamedTarget = Target<std::string>;
+template <class T>
+struct Membership {
+    T player;
+    Group group;
+    static void bind(auto& o) { (void)o.required("player").required("group"); }
+};
+using OnlineMembership = Membership<Online>;
+using NamedMembership = Membership<std::string>;
+template <class T>
+struct Join {
+    T player;
+    Group group;
+    float hours = 0;
+    static void bind(auto& o) { (void)o.required("player").required("group").optional("hours"); }
+};
+using OnlineJoin = Join<Online>;
+using NamedJoin = Join<std::string>;
+template <class T>
+struct Check {
+    T player;
+    Node node;
+    static void bind(auto& o) { (void)o.required("player").required("node"); }
+};
+using OnlineCheck = Check<Online>;
+using NamedCheck = Check<std::string>;
+} // namespace BA::Command
 
 // clang-cl may leave LL's inline variable-template definitions for command
 // parameter offsets as unresolved external references.  Emit concrete,
@@ -29,588 +105,224 @@
             std::make_index_sequence<ll::reflection::member_count_v<BA::Command::type>>{}                              \
         )
 
-BA_DEFINE_MEMBER_OFFSET(0, 创建权限组);
-BA_DEFINE_MEMBER_OFFSET(0, 列出权限组节点);
-BA_DEFINE_MEMBER_OFFSET(0, 添加玩家权限组);
-BA_DEFINE_MEMBER_OFFSET(1, 添加玩家权限组);
-BA_DEFINE_MEMBER_OFFSET(2, 添加玩家权限组);
-BA_DEFINE_MEMBER_OFFSET(0, 离线添加玩家权限组);
-BA_DEFINE_MEMBER_OFFSET(1, 离线添加玩家权限组);
-BA_DEFINE_MEMBER_OFFSET(2, 离线添加玩家权限组);
-BA_DEFINE_MEMBER_OFFSET(0, 列出玩家权限组);
-BA_DEFINE_MEMBER_OFFSET(0, 离线列出玩家权限组);
-BA_DEFINE_MEMBER_OFFSET(0, 添加权限组节点);
-BA_DEFINE_MEMBER_OFFSET(1, 添加权限组节点);
-BA_DEFINE_MEMBER_OFFSET(0, 删除权限组节点);
-BA_DEFINE_MEMBER_OFFSET(1, 删除权限组节点);
-BA_DEFINE_MEMBER_OFFSET(0, 列出玩家权限节点);
-BA_DEFINE_MEMBER_OFFSET(0, 离线列出玩家权限组节点);
-BA_DEFINE_MEMBER_OFFSET(0, 删除权限组);
-BA_DEFINE_MEMBER_OFFSET(0, 注册权限节点);
-BA_DEFINE_MEMBER_OFFSET(1, 注册权限节点);
-BA_DEFINE_MEMBER_OFFSET(2, 注册权限节点);
-BA_DEFINE_MEMBER_OFFSET(0, 移除玩家权限组);
-BA_DEFINE_MEMBER_OFFSET(1, 移除玩家权限组);
-BA_DEFINE_MEMBER_OFFSET(0, 离线移除玩家权限组);
-BA_DEFINE_MEMBER_OFFSET(1, 离线移除玩家权限组);
-BA_DEFINE_MEMBER_OFFSET(0, 设置权限组继承);
-BA_DEFINE_MEMBER_OFFSET(1, 设置权限组继承);
-BA_DEFINE_MEMBER_OFFSET(0, 移除权限组继承);
-BA_DEFINE_MEMBER_OFFSET(1, 移除权限组继承);
-
+BA_DEFINE_MEMBER_OFFSET(0, GroupName);
+BA_DEFINE_MEMBER_OFFSET(0, GroupArg);
+BA_DEFINE_MEMBER_OFFSET(0, Rule);
+BA_DEFINE_MEMBER_OFFSET(1, Rule);
+BA_DEFINE_MEMBER_OFFSET(0, Inheritance);
+BA_DEFINE_MEMBER_OFFSET(1, Inheritance);
+BA_DEFINE_MEMBER_OFFSET(0, Priority);
+BA_DEFINE_MEMBER_OFFSET(1, Priority);
+BA_DEFINE_MEMBER_OFFSET(0, Description);
+BA_DEFINE_MEMBER_OFFSET(1, Description);
+BA_DEFINE_MEMBER_OFFSET(0, RegisterNode);
+BA_DEFINE_MEMBER_OFFSET(1, RegisterNode);
+BA_DEFINE_MEMBER_OFFSET(2, RegisterNode);
+BA_DEFINE_MEMBER_OFFSET(0, OnlineTarget);
+BA_DEFINE_MEMBER_OFFSET(0, NamedTarget);
+BA_DEFINE_MEMBER_OFFSET(0, OnlineMembership);
+BA_DEFINE_MEMBER_OFFSET(1, OnlineMembership);
+BA_DEFINE_MEMBER_OFFSET(0, NamedMembership);
+BA_DEFINE_MEMBER_OFFSET(1, NamedMembership);
+BA_DEFINE_MEMBER_OFFSET(0, OnlineJoin);
+BA_DEFINE_MEMBER_OFFSET(1, OnlineJoin);
+BA_DEFINE_MEMBER_OFFSET(2, OnlineJoin);
+BA_DEFINE_MEMBER_OFFSET(0, NamedJoin);
+BA_DEFINE_MEMBER_OFFSET(1, NamedJoin);
+BA_DEFINE_MEMBER_OFFSET(2, NamedJoin);
+BA_DEFINE_MEMBER_OFFSET(0, OnlineCheck);
+BA_DEFINE_MEMBER_OFFSET(1, OnlineCheck);
+BA_DEFINE_MEMBER_OFFSET(0, NamedCheck);
+BA_DEFINE_MEMBER_OFFSET(1, NamedCheck);
 #undef BA_DEFINE_MEMBER_OFFSET
 
 namespace BA::Command {
-using ll::service::PlayerInfo;
-void RegisterCommands() {
-    using namespace ll::command;
-    auto& Registrar = CommandRegistrar::getInstance(false);
-    auto& pm        = BA::permission::PermissionManager::getInstance(); // 获取 PermissionManager 实例
+namespace {
+using permission::PermissionManager;
+using ll::command::CommandRegistrar;
 
-    // --- 注册/更新 SoftEnum for Permission Groups ---
-    const std::string        groupEnumName = ll::command::enum_name_v<SoftEnum<PermissionGroupEnum>>;
-    std::vector<std::string> groupNames    = pm.getAllGroups(); // 获取所有权限组名称
-
-    if (!Registrar.hasSoftEnum(groupEnumName)) {
-        Registrar.tryRegisterSoftEnum(groupEnumName, groupNames);
-    } else {
-        Registrar.setSoftEnumValues(groupEnumName, groupNames);
-    }
-
-    // --- 注册/更新 SoftEnum for Permission Nodes ---
-    const std::string        nodeEnumName = ll::command::enum_name_v<SoftEnum<PermissionNodeEnum>>;
-    std::vector<std::string> nodeNames    = pm.getAllPermissions(); // 获取所有权限节点名称
-
-    if (!Registrar.hasSoftEnum(nodeEnumName)) {
-        Registrar.tryRegisterSoftEnum(nodeEnumName, nodeNames);
-    } else {
-        Registrar.setSoftEnumValues(nodeEnumName, nodeNames);
-    }
-    // --- SoftEnum 注册/更新结束 ---
-
-    auto& cmd = Registrar.getOrCreateCommand(
-        "bedrockauthority",                    // 命令名
-        "权限",                                // 命令描述
-        CommandPermissionLevel::GameDirectors, // 权限
-        CommandFlagValue::NotCheat             // 无需作弊
-    );
-    cmd.alias("权限组"); // 增加别名
-    cmd.alias("ba");     // 增加别名
-
-    cmd.overload<创建权限组>()
-        .text("创建权限组")
-        .required("权限组id")
-        .execute([&](CommandOrigin const& origin, CommandOutput& output, 创建权限组 const& param, ::Command const&) {
-            bool ok = pm.createGroup(param.权限组id);
-            if (ok) {
-                output.success("已创建权限组: " + param.权限组id);
-            } else {
-                output.error("创建失败");
-            }
-        });
-    cmd.overload<列出权限组节点>()
-        .text("列出权限组节点")
-        .required("权限组id")
-        .execute(
-            [&](CommandOrigin const& origin, CommandOutput& output, 列出权限组节点 const& param, ::Command const&) {
-                if (!pm.groupExists(param.权限组id)) {
-                    output.error("权限组 '" + param.权限组id + "' 不存在。");
-                    return;
-                }
-                std::vector<BA::permission::CompiledPermissionRule> compiledPermissions =
-                    pm.getPermissionsOfGroup(param.权限组id);
-                std::vector<std::string> permissions;
-                for (const auto& rule : compiledPermissions) {
-                    permissions.push_back(rule.pattern);
-                }
-                if (permissions.empty()) {
-                    output.success("权限组 '" + param.权限组id + "' 没有直接或间接的权限节点。");
-                } else {
-                    std::string permStr = "权限组 '" + param.权限组id + "' 的权限节点: ";
-                    for (size_t i = 0; i < permissions.size(); ++i) {
-                        permStr += permissions[i];
-                        if (i < permissions.size() - 1) {
-                            permStr += ", ";
-                        }
-                    }
-                    output.success(permStr);
-                }
-            }
-        );
-
-    // ba query
-    cmd.overload<添加玩家权限组>()
-        .text("加入权限组")
-        .required("playerName")
-        .required("权限组id")
-        .optional("可选过期时间") // 新增可选参数
-        .execute(
-            [&](CommandOrigin const& origin, CommandOutput& output, 添加玩家权限组 const& param, ::Command const&) {
-                auto results = param.playerName.results(origin); // 解析目标选择器
-
-                if (results.empty()) {
-                    output.error("没有选择到玩家");
-                    return;
-                }
-                for (Player* player : results) {
-                    if (!player) continue; // 跳过无效的玩家指针
-
-                    std::string uuidStr = player->getUuid().asString(); // 获取玩家 UUID 字符串
-                    bool        ok;
-                    std::string message;
-                    long long   durationSeconds = 0;
-                    bool        hasDuration     = false;
-
-                    if (param.可选过期时间 > 0.0f) {      // 检查 float 值是否大于 0
-                        float hours = param.可选过期时间; // 直接使用 float 类型的值
-                        if (hours < 0) {                  // 再次检查，虽然理论上不会发生
-                            output.error("过期时间不能为负数。");
-                            return;
-                        }
-                        durationSeconds = static_cast<long long>(hours * 3600); // 小时转秒
-                        hasDuration     = true;
-                    }
-
-                    if (hasDuration) {
-                        ok      = pm.addPlayerToGroup(uuidStr, param.权限组id, durationSeconds);
-                        message = fmt::format(
-                            "已将玩家 {} 加入权限组 {}，过期时间为 {} 小时。",
-                            player->getRealName(),
-                            param.权限组id,
-                            param.可选过期时间
-                        );
-                    } else {
-                        ok      = pm.addPlayerToGroup(uuidStr, param.权限组id);
-                        message = fmt::format("已将玩家 {} 加入权限组 {}。", player->getRealName(), param.权限组id);
-                    }
-
-                    if (ok) {
-                        output.success(message);
-                    } else {
-                        output.error("添加失败，权限组可能不存在或玩家已在组内");
-                    }
-                }
-            }
-        );
-
-    cmd.overload<离线添加玩家权限组>()
-        .text("加入权限组")
-        .required("playerName")
-        .required("权限组id")
-        .optional("可选过期时间") // 新增可选参数
-        .execute(
-            [&](CommandOrigin const& origin, CommandOutput& output, 离线添加玩家权限组 const& param, ::Command const&) {
-                // 使用 PlayerInfo 获取玩家信息
-                auto offlinePlayerInfoOpt = PlayerInfo::getInstance().fromName(param.playerName);
-                if (!offlinePlayerInfoOpt.has_value()) {
-                    output.error(fmt::format("Player '{}' not found.", param.playerName));
-                    return;
-                }
-                const auto& offlinePlayerInfo = offlinePlayerInfoOpt.value();
-                std::string offlineUuidStr    = offlinePlayerInfo.uuid.asString(); // 获取 UUID
-
-                bool        offlineOk;
-                std::string offlineMessage;
-                long long   offlineDurationSeconds = 0;
-                bool        offlineHasDuration     = false;
-
-                if (param.可选过期时间 > 0.0f) {      // 检查 float 值是否大于 0
-                    float hours = param.可选过期时间; // 直接使用 float 类型的值
-                    if (hours < 0) {                  // 再次检查，虽然理论上不会发生
-                        output.error("过期时间不能为负数。");
-                        return;
-                    }
-                    offlineDurationSeconds = static_cast<long long>(hours * 3600); // 小时转秒
-                    offlineHasDuration     = true;
-                }
-
-                if (offlineHasDuration) {
-                    offlineOk      = pm.addPlayerToGroup(offlineUuidStr, param.权限组id, offlineDurationSeconds);
-                    offlineMessage = fmt::format(
-                        "已将离线玩家 {} 加入权限组 {}，过期时间为 {} 小时。",
-                        offlinePlayerInfo.name,
-                        param.权限组id,
-                        param.可选过期时间
-                    );
-                } else {
-                    offlineOk = pm.addPlayerToGroup(offlineUuidStr, param.权限组id);
-                    offlineMessage =
-                        fmt::format("已将离线玩家 {} 加入权限组 {}。", offlinePlayerInfo.name, param.权限组id);
-                }
-
-                if (offlineOk) {
-                    output.success(offlineMessage);
-                } else {
-                    output.error("添加失败，权限组可能不存在或玩家已在组内");
-                }
-            }
-        );
-
-    cmd.overload<列出玩家权限组>()
-        .text("列出玩家权限组")
-        .required("playerName")
-        .execute(
-            [&](CommandOrigin const& origin, CommandOutput& output, 列出玩家权限组 const& param, ::Command const&) {
-                auto results = param.playerName.results(origin); // 解析目标选择器
-
-                if (results.empty()) {
-                    output.error("没有选择到玩家");
-                    return;
-                }
-                for (Player* player : results) {
-                    if (!player) continue; // 跳过无效的玩家指针
-
-                    std::string              uuidStr = player->getUuid().asString(); // 获取玩家 UUID 字符串
-                    std::vector<std::string> groups  = pm.getPlayerGroups(uuidStr);
-                    if (groups.empty()) {
-                        output.success(player->getRealName() + " 不属于任何权限组。");
-                    } else {
-                        std::string groupsStr = "玩家 " + player->getRealName() + " 所属权限组: ";
-                        for (size_t i = 0; i < groups.size(); ++i) {
-                            groupsStr += groups[i];
-                            if (i < groups.size() - 1) {
-                                groupsStr += ", ";
-                            }
-                        }
-                        output.success(groupsStr);
-                    }
-                }
-            }
-        );
-
-    cmd.overload<离线列出玩家权限组>()
-        .text("列出玩家权限组")
-        .required("playerName")
-        .execute(
-            [&](CommandOrigin const& origin, CommandOutput& output, 离线列出玩家权限组 const& param, ::Command const&) {
-                // 使用 PlayerInfo 获取玩家信息
-                auto playerInfoOpt = PlayerInfo::getInstance().fromName(param.playerName);
-                if (!playerInfoOpt.has_value()) {
-                    output.error(fmt::format("Player '{}' not found.", param.playerName));
-                    return;
-                }
-                const auto&              playerInfo = playerInfoOpt.value();
-                std::string              uuidStr    = playerInfo.uuid.asString(); // 获取 UUID
-                std::vector<std::string> groups     = pm.getPlayerGroups(uuidStr);
-                if (groups.empty()) {
-                    output.success(playerInfo.name + " 不属于任何权限组。");
-                } else {
-                    std::string groupsStr = "玩家 " + playerInfo.name + " 所属权限组: ";
-                    for (size_t i = 0; i < groups.size(); ++i) {
-                        groupsStr += groups[i];
-                        if (i < groups.size() - 1) {
-                            groupsStr += ", ";
-                        }
-                        output.success(groupsStr);
-                    }
-                }
-            }
-        );
-
-    // 添加权限组节点命令
-    cmd.overload<添加权限组节点>()
-        .text("添加权限组节点")
-        .required("权限组id")
-        .required("权限节点id")
-        .execute(
-            [&](CommandOrigin const& origin, CommandOutput& output, 添加权限组节点 const& param, ::Command const&) {
-                // 直接尝试添加权限节点，依赖 addPermissionToGroup 内部的组存在性检查和缓存逻辑
-                bool ok = pm.addPermissionToGroup(param.权限组id, param.权限节点id);
-                if (ok) {
-                    output.success("已将权限节点 '" + param.权限节点id + "' 添加到权限组 '" + param.权限组id + "'。");
-                } else {
-                    if (!pm.groupExists(param.权限组id)) {
-                        output.error("添加失败：权限组 '" + param.权限组id + "' 不存在。");
-                    } else {
-                        output.error(
-                            "添加失败：权限节点 '" + param.权限节点id + "' 可能已分配给权限组 '" + param.权限组id
-                            + "'。"
-                        );
-                    }
-                }
-            }
-        );
-
-    // 删除权限组节点命令
-    cmd.overload<删除权限组节点>()
-        .text("删除权限组节点")
-        .required("权限组id")
-        .required("权限节点id")
-        .execute(
-            [&](CommandOrigin const& origin, CommandOutput& output, 删除权限组节点 const& param, ::Command const&) {
-                if (!pm.groupExists(param.权限组id)) {
-                    output.error("权限组 '" + param.权限组id + "' 不存在。");
-                    return;
-                }
-                // 注意：这里假设权限节点不需要预先注册，如果需要，则要添加检查 pm.permissionExists(param.权限节点id)
-                bool ok = pm.removePermissionFromGroup(param.权限组id, param.权限节点id);
-                if (ok) {
-                    output.success("已从权限组 '" + param.权限组id + "' 删除权限节点 '" + param.权限节点id + "'。");
-                } else {
-                    output.error("删除失败，权限组或权限节点可能不存在，或权限未分配给该组。");
-                }
-            }
-        );
-
-
-    // 列出玩家生效的权限节点命令
-    cmd.overload<列出玩家权限节点>()
-        .text("列出玩家权限节点")
-        .required("playerName")
-        .execute(
-            [&](CommandOrigin const& origin, CommandOutput& output, 列出玩家权限节点 const& param, ::Command const&) {
-                auto results = param.playerName.results(origin); // 解析目标选择器
-
-                if (results.empty()) {
-                    output.error("没有选择到玩家");
-                    return;
-                }
-                for (Player* player : results) {
-                    if (!player) continue; // 跳过无效的玩家指针
-
-                    std::string uuidStr = player->getUuid().asString(); // 获取玩家 UUID 字符串
-                    std::vector<BA::permission::CompiledPermissionRule> playerCompiledPermissions =
-                        pm.getAllPermissionsForPlayer(uuidStr);
-                    std::vector<std::string> permissions;
-                    for (const auto& rule : playerCompiledPermissions) {
-                        if (rule.state) { // 只添加值为 true 的权限
-                            permissions.push_back(rule.pattern);
-                        }
-                    }
-                    if (permissions.empty()) {
-                        output.success("玩家 " + player->getRealName() + " 没有生效的权限节点。");
-                    } else {
-                        std::string permStr = "玩家 " + player->getRealName() + " 生效的权限节点: ";
-                        for (size_t i = 0; i < permissions.size(); ++i) {
-                            permStr += permissions[i];
-                            if (i < permissions.size() - 1) {
-                                permStr += ", ";
-                            }
-                        }
-                        output.success(permStr);
-                    }
-                }
-            }
-        );
-    cmd.overload<离线列出玩家权限组节点>()
-        .text("列出玩家权限节点")
-        .required("playerName")
-        .execute([](CommandOrigin const&          origin,
-                    CommandOutput&                output,
-                    离线列出玩家权限组节点 const& args,
-                    ::Command const&) {
-            // 使用 PlayerInfo 获取玩家信息
-            auto playerInfoOpt = PlayerInfo::getInstance().fromName(args.playerName);
-            if (!playerInfoOpt.has_value()) {
-                output.error(fmt::format("Player '{}' not found.", args.playerName));
-                return;
-            }
-            const auto& playerInfo = playerInfoOpt.value();
-            std::string uuidStr    = playerInfo.uuid.asString(); // 获取 UUID
-
-            std::vector<BA::permission::CompiledPermissionRule> playerCompiledPermissions =
-                BA::permission::PermissionManager::getInstance().getAllPermissionsForPlayer(uuidStr);
-            std::vector<std::string> permissions;
-            for (const auto& rule : playerCompiledPermissions) {
-                if (rule.state) { // 只添加值为 true 的权限
-                    permissions.push_back(rule.pattern);
-                }
-            }
-            if (permissions.empty()) {
-                output.success("玩家 " + playerInfo.name + " 没有生效的权限节点。");
-            } else {
-                std::string permStr = "玩家 " + playerInfo.name + " 生效的权限节点: ";
-                for (size_t i = 0; i < permissions.size(); ++i) {
-                    permStr += permissions[i];
-                    if (i < permissions.size() - 1) {
-                        permStr += ", ";
-                    }
-                }
-                output.success(permStr);
-            }
-        });
-
-
-    cmd.overload<删除权限组>()
-        .text("删除权限组")
-        .required("权限组id")
-        .execute([&](CommandOrigin const& origin, CommandOutput& output, 删除权限组 const& param, ::Command const&) {
-            bool ok = pm.deleteGroup(param.权限组id);
-            if (ok) {
-                output.success("已删除权限组: " + param.权限组id);
-            } else {
-                output.error("删除失败，权限组可能不存在");
-            }
-        });
-
-
-    // 新增：注册权限节点命令
-    cmd.overload<注册权限节点>()
-        .text("注册权限节点")
-        .required("权限节点id")
-        .optional("描述")   // 将描述设为可选
-        .optional("默认值") // 将默认值设为可选
-        .execute([&](CommandOrigin const& origin, CommandOutput& output, 注册权限节点 const& param, ::Command const&) {
-            bool ok = pm.registerPermission(param.权限节点id, param.描述, param.默认值);
-            if (ok) {
-                output.success("已注册权限节点: " + param.权限节点id);
-            } else {
-                output.error("注册失败，权限节点可能已存在或发生错误。");
-            }
-        });
-
-    // 移除玩家权限组命令
-    cmd.overload<移除玩家权限组>()
-        .text("移除权限组")     // 命令的子字符串，例如 /ba 移除权限组
-        .required("playerName") // 第一个必需参数：玩家选择器
-        .required("权限组id")   // 第二个必需参数：权限组ID
-        .execute([&](CommandOrigin const&  origin,
-                     CommandOutput&        output,
-                     移除玩家权限组 const& param,
-                     ::Command const&) {
-            auto results = param.playerName.results(origin); // 解析目标选择器
-
-            if (results.empty()) {
-                output.error("没有选择到玩家");
-                return;
-            }
-            // 检查权限组是否存在
-            if (!pm.groupExists(param.权限组id)) {
-                output.error("权限组 '" + param.权限组id + "' 不存在。");
-                return;
-            }
-
-            for (Player* player : results) {
-                if (!player) continue; // 跳过无效的玩家指针
-
-                std::string uuidStr = player->getUuid().asString(); // 获取玩家 UUID 字符串
-                bool        ok      = pm.removePlayerFromGroup(uuidStr, param.权限组id);
-                if (ok) {
-                    output.success("已将玩家 " + player->getRealName() + " 从权限组 '" + param.权限组id + "' 移除。");
-                } else {
-                    // 提供更详细的错误信息
-                    std::vector<std::string> groups    = pm.getPlayerGroups(uuidStr);
-                    bool                     isInGroup = false;
-                    for (const auto& group : groups) {
-                        if (group == param.权限组id) {
-                            isInGroup = true;
-                            break;
-                        }
-                    }
-                    if (!isInGroup) {
-                        // 如果玩家本来就不在组里
-                        output.error(
-                            "移除失败，玩家 " + player->getRealName() + " 不在权限组 '" + param.权限组id + "' 中。"
-                        );
-                    } else {
-                        // 其他未知错误
-                        output.error("从权限组移除玩家 " + player->getRealName() + " 时发生未知错误。");
-                    }
-                }
-            }
-        });
-    // 移除玩家权限组命令
-    cmd.overload<离线移除玩家权限组>()
-        .text("移除权限组")     // 命令的子字符串，例如 /ba 移除权限组
-        .required("playerName") // 第一个必需参数：玩家选择器
-        .required("权限组id")   // 第二个必需参数：权限组ID
-        .execute([&](CommandOrigin const&      origin,
-                     CommandOutput&            output,
-                     离线移除玩家权限组 const& param,
-                     ::Command const&) {
-            auto playerInfoOpt = PlayerInfo::getInstance().fromName(param.playerName);
-            if (!playerInfoOpt.has_value()) {
-                output.error(fmt::format("Player '{}' not found.", param.playerName));
-                return;
-            }
-            const auto& playerInfo = playerInfoOpt.value();
-            std::string uuidStr    = playerInfo.uuid.asString(); // 获取 UUID
-
-            // 检查权限组是否存在
-            if (!pm.groupExists(param.权限组id)) {
-                output.error("权限组 '" + param.权限组id + "' 不存在。");
-                return;
-            }
-
-            bool ok = pm.removePlayerFromGroup(uuidStr, param.权限组id);
-            if (ok) {
-                output.success("已将玩家 " + playerInfo.name + " 从权限组 '" + param.权限组id + "' 移除。");
-            } else {
-                // 提供更详细的错误信息
-                std::vector<std::string> groups    = pm.getPlayerGroups(uuidStr);
-                bool                     isInGroup = false;
-                for (const auto& group : groups) {
-                    if (group == param.权限组id) {
-                        isInGroup = true;
-                        break;
-                    }
-                    if (!isInGroup) {
-                        // 如果玩家本来就不在组里
-                        output.error("移除失败，玩家 " + playerInfo.name + " 不在权限组 '" + param.权限组id + "' 中。");
-                    } else {
-                        // 其他未知错误
-                        output.error("从权限组移除玩家 " + playerInfo.name + " 时发生未知错误。");
-                    }
-                }
-            }
-        });
-
-    // 设置权限组继承命令
-    cmd.overload<设置权限组继承>()
-        .text("设置权限组继承") // 命令的子字符串，例如 /ba 设置权限组继承
-        .required("子权限组id") // 第一个必需参数：子权限组ID
-        .required("父权限组id") // 第二个必需参数：父权限组ID
-        .execute(
-            [&](CommandOrigin const& origin, CommandOutput& output, 设置权限组继承 const& param, ::Command const&) {
-                // 检查子权限组是否存在
-                if (!pm.groupExists(param.子权限组id)) {
-                    output.error("子权限组 '" + param.子权限组id + "' 不存在。");
-                    return;
-                }
-                // 检查父权限组是否存在
-                if (!pm.groupExists(param.父权限组id)) {
-                    output.error("父权限组 '" + param.父权限组id + "' 不存在。");
-                    return;
-                }
-
-                bool ok = pm.addGroupInheritance(param.子权限组id, param.父权限组id);
-                if (ok) {
-                    output.success("已设置权限组 '" + param.子权限组id + "' 继承自 '" + param.父权限组id + "'。");
-                } else {
-                    // 提供更详细的错误信息，例如循环继承或已存在继承关系
-                    output.error("设置继承失败。可能原因：已存在此继承关系，或形成了循环继承。");
-                }
-            }
-        );
-
-    // 移除权限组继承命令
-    cmd.overload<移除权限组继承>()
-        .text("移除权限组继承") // 命令的子字符串
-        .required("子权限组id") // 子权限组ID
-        .required("父权限组id") // 父权限组ID
-        .execute([&](CommandOrigin const&  origin,
-                     CommandOutput&        output,
-                     移除权限组继承 const& param,
-                     ::Command const&) {
-            // 检查子权限组是否存在（虽然移除时可能不需要，但保持一致性）
-            if (!pm.groupExists(param.子权限组id)) {
-                output.error("子权限组 '" + param.子权限组id + "' 不存在。");
-                return;
-            }
-            // 检查父权限组是否存在（同上）
-            if (!pm.groupExists(param.父权限组id)) {
-                output.error("父权限组 '" + param.父权限组id + "' 不存在。");
-                return;
-            }
-
-            bool ok = pm.removeGroupInheritance(param.子权限组id, param.父权限组id);
-            if (ok) {
-                output.success("已移除权限组 '" + param.子权限组id + "' 对 '" + param.父权限组id + "' 的继承关系。");
-            } else {
-                // 提供更详细的错误信息，例如继承关系原本就不存在
-                output.error("移除继承失败。可能原因：该继承关系不存在。");
-            }
-        });
+template <class Enum>
+void refreshEnum(const std::vector<std::string>& values) {
+    auto& registrar = CommandRegistrar::getInstance(false);
+    const std::string name = ll::command::enum_name_v<Enum>;
+    if (registrar.hasSoftEnum(name)) registrar.setSoftEnumValues(name, values);
+    else registrar.tryRegisterSoftEnum(name, values);
 }
 
+bool authorized(const CommandOrigin& origin, const std::string& node) {
+    if (origin.getPermissionsLevel() >= CommandPermissionLevel::GameDirectors) return true;
+    auto* actor = origin.getEntity();
+    if (origin.getOriginType() != CommandOriginType::Player || !actor || !actor->isPlayer()) return false;
+    return PermissionManager::getInstance().hasPermission(static_cast<Player*>(actor)->getUuid().asString(), node);
+}
+
+// The English words also form the suffix of the permission node, e.g. group.create.
+template <class Params, class Fn>
+void addCommand(ll::command::CommandHandle& cmd, std::string_view path, std::string_view chinese, Fn handler) {
+    std::string node = "bedrockauthority.admin." + std::string(path);
+    auto& pm = PermissionManager::getInstance();
+    if (!pm.permissionExists(node)) pm.registerPermission(node, std::string(chinese), false);
+    auto execute = [node, handler](const CommandOrigin& origin, CommandOutput& out, const Params& args) {
+        if (!authorized(origin, node)) {
+            out.error("缺少权限 " + node);
+            return;
+        }
+        handler(origin, out, args);
+    };
+    auto english = cmd.overload<Params>();
+    while (!path.empty()) {
+        auto pos = path.find('.');
+        (void)english.text(path.substr(0, pos));
+        if (pos == path.npos) break;
+        path.remove_prefix(pos + 1);
+    }
+    Params::bind(english);
+    english.execute(execute);
+    auto alias = cmd.overload<Params>();
+    (void)alias.text(chinese);
+    Params::bind(alias);
+    alias.execute(execute);
+}
+
+template <class Fn>
+void forPlayers(const Online& target, const CommandOrigin& origin, CommandOutput& out, Fn visit) {
+    auto players = target.results(origin);
+    if (players.empty()) out.error("没有选择到玩家。");
+    for (auto* player : players) visit(player->getUuid().asString(), player->getRealName());
+}
+
+template <class Fn>
+void forPlayers(const std::string& name, const CommandOrigin&, CommandOutput& out, Fn visit) {
+    auto player = ll::service::PlayerInfo::getInstance().fromName(name);
+    if (player) visit(player->uuid.asString(), player->name);
+    else out.error("找不到玩家 " + name);
+}
+
+template <template <class> class Params, class Fn>
+void addPlayerCommand(ll::command::CommandHandle& cmd, std::string_view path, std::string_view chinese, Fn fn) {
+    auto run = [fn](const CommandOrigin& origin, CommandOutput& out, const auto& args) {
+        forPlayers(args.player, origin, out, [&](const std::string& uuid, const std::string& name) {
+            fn(out, args, uuid, name);
+        });
+    };
+    addCommand<Params<Online>>(cmd, path, chinese, run);
+    addCommand<Params<std::string>>(cmd, path, chinese, run);
+}
+
+void report(CommandOutput& out, bool success, const std::string& message) {
+    if (success) out.success(message);
+    else out.error("操作未完成，请检查目标、现有设置或事件是否被取消。");
+}
+} // namespace
+
+void RegisterCommands() {
+    auto& pm = PermissionManager::getInstance();
+    auto& cmd = CommandRegistrar::getInstance(false).getOrCreateCommand(
+        "bedrockauthority", "权限管理", CommandPermissionLevel::Any, CommandFlagValue::NotCheat
+    );
+    cmd.alias("权限组");
+    cmd.alias("ba");
+
+    addCommand<GroupName>(cmd, "group.create", "创建权限组", [&](auto&, auto& out, const auto& a) {
+        bool ok = pm.createGroup(a.group);
+        if (ok) refreshEnum<Group>(pm.getAllGroups());
+        report(out, ok, "权限组已创建。");
+    });
+    addCommand<GroupArg>(cmd, "group.delete", "删除权限组", [&](auto&, auto& out, const auto& a) {
+        bool ok = pm.deleteGroup(a.group);
+        if (ok) refreshEnum<Group>(pm.getAllGroups());
+        report(out, ok, "权限组已删除。");
+    });
+    addCommand<NoArgs>(cmd, "group.list", "列出所有权限组", [&](auto&, auto& out, const auto&) {
+        auto groups = pm.getAllGroups();
+        out.success(groups.empty() ? "没有权限组。" : fmt::format("权限组：{}", fmt::join(groups, ", ")));
+    });
+    addCommand<Priority>(cmd, "group.priority", "设置组优先级", [&](auto&, auto& out, const auto& a) {
+        report(out, pm.setGroupPriority(a.group, a.priority), "权限组优先级已更新。");
+    });
+    addCommand<Description>(cmd, "group.description", "修改组描述", [&](auto&, auto& out, const auto& a) {
+        report(out, pm.updateGroupDescription(a.group, a.description), "权限组描述已更新。");
+    });
+    addCommand<GroupArg>(cmd, "group.nodes", "列出权限组节点", [&](auto&, auto& out, const auto& a) {
+        if (!pm.groupExists(a.group)) {
+            out.error("权限组不存在。");
+            return;
+        }
+        std::vector<std::string> rules;
+        for (const auto& rule : pm.getPermissionsOfGroup(a.group)) {
+            rules.push_back(rule.state ? rule.pattern : "-" + rule.pattern);
+        }
+        out.success(rules.empty() ? "该组没有权限节点。" : fmt::format("权限节点：{}", fmt::join(rules, ", ")));
+    });
+    addCommand<Rule>(cmd, "group.grant", "添加权限组节点", [&](auto&, auto& out, const auto& a) {
+        report(out, pm.addPermissionToGroup(a.group, a.node), "权限组规则已更新。");
+    });
+    addCommand<Rule>(cmd, "group.revoke", "删除权限组节点", [&](auto&, auto& out, const auto& a) {
+        report(out, pm.removePermissionFromGroup(a.group, a.node), "权限组规则已更新。");
+    });
+    addCommand<Inheritance>(cmd, "group.inherit", "设置权限组继承", [&](auto&, auto& out, const auto& a) {
+        report(out, pm.addGroupInheritance(a.child, a.parent), "继承关系已更新。");
+    });
+    addCommand<Inheritance>(cmd, "group.uninherit", "移除权限组继承", [&](auto&, auto& out, const auto& a) {
+        report(out, pm.removeGroupInheritance(a.child, a.parent), "继承关系已更新。");
+    });
+    addCommand<RegisterNode>(cmd, "node.register", "注册权限节点", [&](auto&, auto& out, const auto& a) {
+        bool ok = pm.registerPermission(a.node, a.description, a.defaultValue);
+        if (ok) refreshEnum<Node>(pm.getAllPermissions());
+        report(out, ok, "已注册权限节点 " + a.node);
+    });
+
+    addPlayerCommand<Join>(cmd, "user.add", "加入权限组", [&](auto& out, const auto& a, auto& uuid, auto& name) {
+        double seconds = static_cast<double>(a.hours) * 3600;
+        const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        if (!std::isfinite(seconds) || seconds < 0 || (seconds > 0 && seconds < 1)
+            || seconds >= static_cast<double>(std::numeric_limits<long long>::max() - now)) {
+            out.error("时长以小时为单位，临时成员至少需要一秒，0 表示永久。");
+            return;
+        }
+        report(out, pm.addPlayerToGroup(uuid, a.group, static_cast<long long>(seconds)), name + " 的入组请求已处理。");
+    });
+    addPlayerCommand<Membership>(cmd, "user.remove", "移除权限组", [&](auto& out, const auto& a, auto& uuid, auto& name) {
+        report(out, pm.removePlayerFromGroup(uuid, a.group), name + " 的移组请求已处理。");
+    });
+    addPlayerCommand<Target>(cmd, "user.groups", "列出玩家权限组", [&](auto& out, const auto&, auto& uuid, auto& name) {
+        auto groups = pm.getPlayerGroups(uuid);
+        out.success(groups.empty() ? name + " 不属于任何权限组。"
+                                   : fmt::format("{} 所属权限组：{}", name, fmt::join(groups, ", ")));
+    });
+    addPlayerCommand<Target>(cmd, "user.nodes", "列出玩家权限节点", [&](auto& out, const auto&, auto& uuid, auto& name) {
+        std::vector<std::string> nodes;
+        for (const auto& rule : pm.getAllPermissionsForPlayer(uuid)) {
+            if (rule.state) nodes.push_back(rule.pattern);
+        }
+        out.success(nodes.empty() ? name + " 没有生效的权限节点。"
+                                  : fmt::format("{} 生效的权限节点：{}", name, fmt::join(nodes, ", ")));
+    });
+    addPlayerCommand<Membership>(cmd, "user.expiry", "查看玩家组剩余时间", [&](auto& out, const auto& a, auto& uuid, auto& name) {
+        for (const auto& group : pm.getPlayerGroupsWithPriorities(uuid)) {
+            if (group.name != a.group) continue;
+            auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now()).time_since_epoch().count();
+            out.success(group.expirationTime
+                ? fmt::format("{} 在 {} 组剩余 {} 秒。", name, group.name, std::max(0LL, *group.expirationTime - now))
+                : fmt::format("{} 是 {} 组的永久成员。", name, group.name));
+            return;
+        }
+        out.error(name + " 当前不属于该组。");
+    });
+    addPlayerCommand<Check>(cmd, "check", "检查玩家权限", [&](auto& out, const auto& a, auto& uuid, auto& name) {
+        out.success(fmt::format("{} {} 权限 {}", name, pm.hasPermission(uuid, a.node) ? "拥有" : "没有", std::string(a.node)));
+    });
+    addCommand<NoArgs>(cmd, "reload", "重载", [&](auto&, auto& out, const auto&) {
+        if (!MyMod::getInstance().reload()) {
+            out.error("重载失败，请检查配置文件及服务端日志。");
+            return;
+        }
+        refreshEnum<Group>(pm.getAllGroups());
+        refreshEnum<Node>(pm.getAllPermissions());
+        out.success("已重载权限缓存和运行时配置，数据库连接设置在重启后生效。");
+    });
+
+    refreshEnum<Group>(pm.getAllGroups());
+    refreshEnum<Node>(pm.getAllPermissions());
+}
 } // namespace BA::Command

@@ -113,6 +113,10 @@ target("Bedrock-Authority") -- Change this to your mod name.
         os.mkdir(libdir)
         os.mkdir(path.join(includedir, "permission"))
         os.cp(path.join(os.projectdir(), "src", "permission", "*.h"), path.join(includedir, "permission"))
-        os.cp(path.join(os.projectdir(), "src", "permission", "events", "*.h"), path.join(includedir, "permission", "events"))
+        local eventdir = path.join(includedir, "permission", "events")
+        -- Older packages copied a single header to a file named "events".
+        if os.isfile(eventdir) then os.rm(eventdir) end
+        os.mkdir(eventdir)
+        os.cp(path.join(os.projectdir(), "src", "permission", "events", "*.h"), eventdir)
         os.cp(path.join(target:targetdir(), target:name() .. ".lib"), libdir)
         end)

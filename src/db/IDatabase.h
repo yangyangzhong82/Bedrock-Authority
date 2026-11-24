@@ -2,6 +2,7 @@
 
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -60,11 +61,25 @@ public:
     /// @return True if execution was successful, false otherwise
     virtual bool executePrepared(const std::string& sql, const SqlParams& params) = 0;
 
+    bool executeChanged(const std::string& sql, const SqlParams& params) {
+        std::lock_guard lock(connectionMutex_);
+        lastWriteChanged_ = true;
+        return executePrepared(sql, params) && lastWriteChanged_;
+    }
+
     /// @brief Execute a prepared SQL query and return rows of columns
     /// @param sql The SQL query with placeholders (e.g., ?)
     /// @param params The parameters to bind to the placeholders, with nullopt for SQL NULL
     /// @return A vector of rows, where each row is a vector of column strings
     virtual std::vector<std::vector<std::string>> queryPrepared(const std::string& sql, const SqlParams& params) = 0;
+
+    std::vector<std::vector<std::string>> queryChecked(const std::string& sql, const SqlParams& params) {
+        std::lock_guard lock(connectionMutex_);
+        lastQuerySucceeded_ = true;
+        auto rows = queryPrepared(sql, params);
+        if (!lastQuerySucceeded_) throw std::runtime_error("读取权限索引失败");
+        return rows;
+    }
 
     /// @brief Close the database connection
     virtual void close() = 0;
@@ -103,6 +118,8 @@ public:
 protected:
     std::recursive_mutex connectionMutex_;
     bool                 transactionActive_ = false;
+    bool                 lastWriteChanged_ = false;
+    bool                 lastQuerySucceeded_ = false;
 
 private:
     virtual bool beginTransaction() = 0;

@@ -23,6 +23,7 @@ public:
 
     /// @return True if the mod is enabled successfully.
     bool enable();
+    bool reload();
 
     /// @return True if the mod is disabled successfully.
     bool disable();

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../PermissionData.h"
 #include <ll/api/event/Cancellable.h>
 #include <ll/api/event/Event.h>
 #include <string>
@@ -23,9 +24,9 @@ public:
       mExpirationTime(expirationTime) {}
 
 public:
-    std::string& getPlayerUuid() const;
-    std::string& getGroupName() const;
-    std::optional<long long>& getExpirationTime() const;
+    BA_API std::string& getPlayerUuid() const;
+    BA_API std::string& getGroupName() const;
+    BA_API std::optional<long long>& getExpirationTime() const;
 };
 
 class PlayerJoinGroupAfterEvent final : public ll::event::Event {
@@ -45,9 +46,9 @@ public:
       mExpirationTime(expirationTime) {}
 
 public:
-    std::string const& getPlayerUuid() const;
-    std::string const& getGroupName() const;
-    std::optional<long long> const& getExpirationTime() const;
+    BA_API std::string const& getPlayerUuid() const;
+    BA_API std::string const& getGroupName() const;
+    BA_API std::optional<long long> const& getExpirationTime() const;
 };
 
 } // namespace BA::permission::event

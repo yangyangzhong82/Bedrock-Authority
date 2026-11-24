@@ -14,6 +14,13 @@ class IDatabase;
 namespace permission {
 namespace internal {
 
+struct MembershipChange {
+    std::string playerUuid;
+    std::string groupName;
+    std::string groupId;
+    std::optional<long long> expiry;
+};
+
 /**
  * @brief 权限存储类，负责与数据库交互，管理权限、用户组、用户组权限、继承关系和玩家用户组数据。
  */
@@ -275,25 +282,9 @@ public:
      */
     std::unordered_map<std::string, GroupDetails> fetchGroupDetailsByNames(const std::set<std::string>& groupNames); // 新增：根据名称获取用户组详细信息
 
-    /**
-     * @brief 将玩家批量添加到多个用户组。
-     * @param playerUuid 玩家UUID。
-     * @param groupInfos 包含用户组名称和ID的pair向量。
-     * @return 成功添加的玩家用户组关联数量。
-     */
-    size_t                    addPlayerToGroups(
-                           const std::string&                                      playerUuid,
-                           const std::vector<std::pair<std::string, std::string>>& groupInfos
-                       ); // pair<groupName, groupId>
-    /**
-     * @brief 将玩家从多个用户组中批量移除。
-     * @param playerUuid 玩家UUID。
-     * @param groupIds 用户组ID向量。
-     * @return 成功移除的玩家用户组关联数量。
-     */
-    size_t removePlayerFromGroups(const std::string& playerUuid, const std::vector<std::string>& groupIds);
-
-    std::vector<std::string> deleteExpiredPlayerGroups();
+    std::vector<MembershipChange> changeMemberships(const std::vector<MembershipChange>& changes, bool adding);
+    std::vector<std::pair<std::string, std::string>> fetchExpiredMemberships(long long cutoff);
+    bool removeExpiredMembership(const std::string& playerUuid, const std::string& groupId, long long cutoff);
     struct PlayerGroupInfo {
         std::string              groupId;
         std::optional<long long> expiryTimestamp;

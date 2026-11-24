@@ -173,6 +173,7 @@ bool PostgreSQLDatabase::executePrepared(const string& sql, const SqlParams& par
         return false;
     }
 
+    lastWriteChanged_ = PQcmdTuples(res)[0] != '\0' && PQcmdTuples(res)[0] != '0';
     PQclear(res);
     logger.debug("PostgreSQL 执行预处理语句成功");
     return true;
@@ -180,6 +181,7 @@ bool PostgreSQLDatabase::executePrepared(const string& sql, const SqlParams& par
 
 vector<vector<string>> PostgreSQLDatabase::queryPrepared(const string& sql, const SqlParams& params) {
     std::lock_guard lock(connectionMutex_);
+    lastQuerySucceeded_ = false;
     if (!ensureConnection()) return {};
     auto& logger = NativeMod::current()->getLogger();
     string processedSql = replacePlaceholders(sql);
@@ -227,6 +229,7 @@ vector<vector<string>> PostgreSQLDatabase::queryPrepared(const string& sql, cons
     }
 
     PQclear(res);
+    lastQuerySucceeded_ = true;
     logger.debug("PostgreSQL 查询预处理语句返回 {} 行", result.size());
     return result;
 }

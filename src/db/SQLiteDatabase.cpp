@@ -133,7 +133,7 @@ bool SQLiteDatabase::executePrepared(const std::string& sql, const SqlParams& pa
         return false;
     }
 
-    // 终结语句
+    lastWriteChanged_ = sqlite3_changes(db_) > 0;
     sqlite3_finalize(stmt);
     logger.debug("预处理 SQL 执行成功");
     return true;
@@ -142,6 +142,7 @@ bool SQLiteDatabase::executePrepared(const std::string& sql, const SqlParams& pa
 std::vector<std::vector<std::string>>
 SQLiteDatabase::queryPrepared(const std::string& sql, const SqlParams& params) {
     std::lock_guard lock(connectionMutex_);
+    lastQuerySucceeded_ = false;
     auto& logger = NativeMod::current()->getLogger();
     logger.debug("正在查询预处理 SQL: {}", sql);
     sqlite3_stmt*          stmt = nullptr;
@@ -189,6 +190,7 @@ SQLiteDatabase::queryPrepared(const std::string& sql, const SqlParams& params) {
 
     // 终结语句
     sqlite3_finalize(stmt);
+    lastQuerySucceeded_ = rc == SQLITE_DONE;
     logger.debug("预处理查询返回 {} 行", result.size());
     return result;
 }

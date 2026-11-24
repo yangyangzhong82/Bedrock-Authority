@@ -43,6 +43,8 @@ bool PermissionManager::init(db::IDatabase* db, bool enableWarmup, unsigned int 
  */
 void PermissionManager::shutdown() { m_pimpl->shutdown(); }
 
+void PermissionManager::reloadCache(bool warmup) { m_pimpl->reloadCache(warmup); }
+
 // --- 所有其他方法都只是转发调用到实现类 ---
 
 /**

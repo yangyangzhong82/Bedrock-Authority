@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../PermissionData.h"
 #include <ll/api/event/Cancellable.h>
 #include <ll/api/event/Event.h>
 #include <string>
@@ -24,9 +25,9 @@ public:
       mIsAdd(isAdd) {}
 
 public:
-    std::string& getGroupName() const;
-    std::string& getPermissionRule() const;
-    bool&        isAdd() const;
+    BA_API std::string& getGroupName() const;
+    BA_API std::string& getPermissionRule() const;
+    BA_API bool&        isAdd() const;
 };
 
 class GroupPermissionChangeAfterEvent final : public ll::event::Event {
@@ -46,9 +47,9 @@ public:
       mIsAdd(isAdd) {}
 
 public:
-    std::string const& getGroupName() const;
-    std::string const& getPermissionRule() const;
-    bool const&        isAdd() const;
+    BA_API std::string const& getGroupName() const;
+    BA_API std::string const& getPermissionRule() const;
+    BA_API bool const&        isAdd() const;
 };
 
 } // namespace BA::permission::event

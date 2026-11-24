@@ -36,6 +36,7 @@ public:
      * @brief 关闭权限管理器，释放资源。
      */
     BA_API void shutdown();
+    BA_API void reloadCache(bool warmup);
 
     // --- 权限管理 ---
     /**

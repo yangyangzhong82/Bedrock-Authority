@@ -38,6 +38,7 @@ public:
      * @brief 停止清理调度器，并等待其线程完成。
      */
     void stop();
+    void setInterval(long long seconds);
 
 private:
     /**

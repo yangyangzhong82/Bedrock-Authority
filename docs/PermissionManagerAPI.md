@@ -148,6 +148,21 @@ auto& pm = BA::permission::PermissionManager::getInstance();
 
 ---
 
+## 权限变更事件
+
+在 `BA::permission::event` 命名空间中，每项操作都有可取消的 `BeforeEvent` 和提交后发布的 `AfterEvent`。监听器可以修改 Before 参数，管理器按修改后的玩家、组、规则、操作方向和到期时间执行，成功后按实际目标失效缓存并发布 After。事件中的引用仅在同步回调期间有效。
+
+| 操作 | 事件名前缀 | 头文件 |
+| --- | --- | --- |
+| 玩家入组、离组 | `PlayerJoinGroup`、`PlayerLeaveGroup` | `PlayerJoinGroupEvent.h`、`PlayerLeaveGroupEvent.h` |
+| 添加、移除组权限规则 | `GroupPermissionChange` | `GroupPermissionChangeEvent.h` |
+| 创建、删除组 | `GroupCreate`、`GroupDelete` | `GroupManagementEvents.h` |
+| 修改继承、优先级、描述 | `GroupInheritanceChange`、`GroupPriorityChange`、`GroupDescriptionChange` | `GroupManagementEvents.h` |
+
+头文件位于 `permission/events/`。例如，在 `GroupPriorityChangeBeforeEvent` 回调中给 `event.priority` 赋值即可修改将要保存的优先级。玩家入组事件的 `getExpirationTime()` 为 Unix 秒时间戳，`std::nullopt` 表示永久。
+
+批量成员操作逐项发布 Before，取消某一项后继续处理其余项，事务提交后逐项发布 After。已在组内的玩家通过批量入组会保留原到期时间。定期清理在清理线程同步发布离组事件，删除时会重新检查目标是否过期。取消清理会保留记录供后续周期重试，已到期的成员资格仍按到期时间失效。
+
 ## 使用示例
 
 假设您的插件有一个 `/fly` 命令，需要检查玩家是否拥有 `myplugin.fly` 权限。
