@@ -2,6 +2,7 @@
 
 #include "permission/PermissionData.h"
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <set>
 #include <shared_mutex>
@@ -12,6 +13,21 @@
 namespace BA {
 namespace permission {
 namespace internal {
+
+class PlayerPermissionRules {
+public:
+    explicit PlayerPermissionRules(std::vector<CompiledPermissionRule> compiled);
+    std::optional<bool> match(const std::string& node) const;
+
+    const std::vector<CompiledPermissionRule> rules;
+
+private:
+    std::string exactKey(std::string node) const;
+
+    std::regex_traits<char>                 traits;
+    std::unordered_map<std::string, size_t> exactRules;
+    std::vector<size_t>                     regexRules;
+};
 
 class PermissionCache {
 public:
@@ -33,14 +49,14 @@ public:
     std::unordered_map<std::string, std::string> getAllGroups() const;
 
     // 玩家权限派生缓存（带版本号防陈旧回填 + 容量上限）
-    uint64_t                                           playerPermissionsEpoch() const;
-    std::optional<std::vector<CompiledPermissionRule>> findPlayerPermissions(const std::string& playerUuid) const;
-    void                                               storePlayerPermissions(
-        const std::string&                         playerUuid,
-        const std::vector<CompiledPermissionRule>& permissions,
-        std::optional<long long>                   earliestExpiry,
-        std::vector<std::string>                   sourceGroups,
-        uint64_t                                   expectedEpoch
+    uint64_t                                     playerPermissionsEpoch() const;
+    std::shared_ptr<const PlayerPermissionRules> findPlayerPermissions(const std::string& playerUuid) const;
+    void storePlayerPermissions(
+        const std::string&                           playerUuid,
+        std::shared_ptr<const PlayerPermissionRules> permissions,
+        std::optional<long long>                     earliestExpiry,
+        std::vector<std::string>                     sourceGroups,
+        uint64_t                                     expectedEpoch
     );
     void invalidatePlayerPermissions(const std::string& playerUuid);
     void invalidatePlayerPermissionsForGroups(const std::set<std::string>& affectedGroups);
@@ -92,10 +108,10 @@ public:
 
 private:
     struct PlayerPermissionEntry {
-        std::vector<CompiledPermissionRule> rules;
-        std::optional<long long>            earliestExpiry;
-        std::vector<std::string>            sourceGroups;
-        uint64_t                            insertedSeq = 0;
+        std::shared_ptr<const PlayerPermissionRules> rules;
+        std::optional<long long>                     earliestExpiry;
+        std::vector<std::string>                     sourceGroups;
+        uint64_t                                     insertedSeq = 0;
     };
 
     struct PlayerGroupEntry {

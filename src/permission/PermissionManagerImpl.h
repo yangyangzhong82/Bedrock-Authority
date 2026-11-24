@@ -19,6 +19,7 @@ namespace permission {
 namespace internal {
 class PermissionStorage;
 class PermissionCache;
+class PlayerPermissionRules;
 } // namespace internal
 } // namespace permission
 } // namespace BA
@@ -297,6 +298,7 @@ private:
      *        此方法会从存储层加载数据并填充到缓存中，以提高后续查询性能。
      */
     void populateAllCaches();
+    std::shared_ptr<const internal::PlayerPermissionRules> getPlayerPermissionRules(const std::string& playerUuid);
     std::vector<CompiledPermissionRule> compilePermissionsForGroups(
         const std::set<std::string>& relevantGroupNames,
         std::map<std::string, bool>  effectiveState

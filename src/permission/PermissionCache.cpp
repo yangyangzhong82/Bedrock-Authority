@@ -131,12 +131,47 @@ std::unordered_map<std::string, std::string> PermissionCache::getAllGroups() con
 
 // --- 玩家权限派生缓存 ---
 
+PlayerPermissionRules::PlayerPermissionRules(std::vector<CompiledPermissionRule> compiled)
+: rules(std::move(compiled)) {
+    if (rules.empty()) return;
+    const auto locale = rules.front().regex.getloc();
+    traits.imbue(locale);
+    for (size_t i = 0; i < rules.size(); ++i) {
+        const auto& rule = rules[i];
+        if (rule.pattern.find('*') == std::string::npos && rule.regex.getloc() == locale) {
+            // 大小写不同的规则可能对应同一节点，保留原顺序中的第一条。
+            exactRules.try_emplace(exactKey(rule.pattern), i);
+        } else {
+            regexRules.push_back(i);
+        }
+    }
+}
+
+std::string PlayerPermissionRules::exactKey(std::string node) const {
+    for (char& c : node) c = traits.translate_nocase(c);
+    return node;
+}
+
+std::optional<bool> PlayerPermissionRules::match(const std::string& node) const {
+    size_t firstExact = rules.size();
+    if (!exactRules.empty()) {
+        auto it = exactRules.find(exactKey(node));
+        if (it != exactRules.end()) firstExact = it->second;
+    }
+    for (size_t i : regexRules) {
+        if (i >= firstExact) break;
+        if (std::regex_match(node, rules[i].regex)) return rules[i].state;
+    }
+    if (firstExact < rules.size()) return rules[firstExact].state;
+    return std::nullopt;
+}
+
 uint64_t PermissionCache::playerPermissionsEpoch() const {
     std::shared_lock lock(m_playerPermissionsMutex);
     return m_playerPermsEpoch;
 }
 
-std::optional<std::vector<CompiledPermissionRule>>
+std::shared_ptr<const PlayerPermissionRules>
 PermissionCache::findPlayerPermissions(const std::string& playerUuid) const {
     std::shared_lock lock(m_playerPermissionsMutex);
     auto             it = m_playerPermissionsCache.find(playerUuid);
@@ -146,15 +181,15 @@ PermissionCache::findPlayerPermissions(const std::string& playerUuid) const {
             return entry.rules;
         }
     }
-    return std::nullopt;
+    return nullptr;
 }
 
 void PermissionCache::storePlayerPermissions(
-    const std::string&                         playerUuid,
-    const std::vector<CompiledPermissionRule>& permissions,
-    std::optional<long long>                   earliestExpiry,
-    std::vector<std::string>                   sourceGroups,
-    uint64_t                                   expectedEpoch
+    const std::string&                           playerUuid,
+    std::shared_ptr<const PlayerPermissionRules> permissions,
+    std::optional<long long>                     earliestExpiry,
+    std::vector<std::string>                     sourceGroups,
+    uint64_t                                     expectedEpoch
 ) {
     std::unique_lock lock(m_playerPermissionsMutex);
     if (m_playerPermsEpoch != expectedEpoch) return;
@@ -169,7 +204,7 @@ void PermissionCache::storePlayerPermissions(
 
     m_playerPermissionsCache.insert_or_assign(
         playerUuid,
-        PlayerPermissionEntry{permissions, earliestExpiry, std::move(sourceGroups), ++m_playerPermsSeq}
+        PlayerPermissionEntry{std::move(permissions), earliestExpiry, std::move(sourceGroups), ++m_playerPermsSeq}
     );
 }
 

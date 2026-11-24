@@ -838,9 +838,14 @@ std::vector<std::string> PermissionManager::PermissionManagerImpl::getPlayersInG
  */
 std::vector<CompiledPermissionRule>
 PermissionManager::PermissionManagerImpl::getAllPermissionsForPlayer(const std::string& playerUuid) {
+    return getPlayerPermissionRules(playerUuid)->rules;
+}
+
+std::shared_ptr<const internal::PlayerPermissionRules>
+PermissionManager::PermissionManagerImpl::getPlayerPermissionRules(const std::string& playerUuid) {
     // 1. 检查缓存
     if (auto cachedPerms = m_cache->findPlayerPermissions(playerUuid)) {
-        return *cachedPerms;
+        return cachedPerms;
     }
 
     // 2. 在读取任何数据前记录版本，防止并发写失效后回填陈旧结果
@@ -869,7 +874,9 @@ PermissionManager::PermissionManagerImpl::getAllPermissionsForPlayer(const std::
         allRelevantGroupNames.insert(ancestors.begin(), ancestors.end());
     }
 
-    auto finalPerms = compilePermissionsForGroups(allRelevantGroupNames, std::move(effectiveState));
+    auto finalPerms = std::make_shared<const internal::PlayerPermissionRules>(
+        compilePermissionsForGroups(allRelevantGroupNames, std::move(effectiveState))
+    );
 
     // 3. 版本匹配时回填缓存
     std::vector<std::string> sourceGroups(allRelevantGroupNames.begin(), allRelevantGroupNames.end());
@@ -887,11 +894,8 @@ bool PermissionManager::PermissionManagerImpl::hasPermission(
     const std::string& playerUuid,
     const std::string& permissionNode
 ) {
-    auto rules = getAllPermissionsForPlayer(playerUuid);
-    for (const auto& rule : rules) {
-        if (regex_match(permissionNode, rule.regex)) {
-            return rule.state; // 匹配到规则，返回其状态
-        }
+    if (auto state = getPlayerPermissionRules(playerUuid)->match(permissionNode)) {
+        return *state;
     }
 
     // 如果没有匹配到特定规则，则回退到权限的默认值（权威索引已在 init 时全量加载）
