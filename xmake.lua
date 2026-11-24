@@ -18,7 +18,7 @@ end
 
 add_requires("levibuildscript")
 add_requires("sqlite3 3.53.0+0")
-add_requires("legacyremotecall")
+add_requires("legacyremotecall", {optional = true})
 add_requires("drogon")
 add_requires("mysql")
 add_requires("postgresql")
@@ -54,7 +54,15 @@ target("Bedrock-Authority") -- Change this to your mod name.
             {tools = {"clang_cl"}}
         )
     end
-    add_packages("levilamina", "sqlite3", "legacyremotecall", "drogon")
+    add_packages("levilamina", "sqlite3", "drogon")
+    if has_package("legacyremotecall") then
+        add_packages("legacyremotecall")
+        add_defines("BA_WITH_LEGACY_REMOTE_CALL=1")
+        if is_plat("windows") then
+            add_shflags("/DELAYLOAD:LegacyRemoteCall.dll", {force = true})
+            add_links("delayimp")
+        end
+    end
     add_packages("mysql", "postgresql")
     add_defines("BA_ENABLE_MYSQL=1", "BA_ENABLE_POSTGRESQL=1")
     if is_plat("windows") then

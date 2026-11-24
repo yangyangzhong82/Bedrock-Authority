@@ -3,9 +3,5 @@
     "entry": "${modFile}",
     "version": "${modVersion}",
     "type": "native",
-    "dependencies": [
-        {
-            "name": "LegacyRemoteCall"
-        }
-]
+    "dependencies": []
 }

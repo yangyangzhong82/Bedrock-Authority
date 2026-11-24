@@ -1,4 +1,5 @@
 #include "mod/MyMod.h"
+#include "mod/ScriptApi.h"
 
 #include "command/Command.h"
 #include "db/DatabaseFactory.h"
@@ -118,6 +119,7 @@ bool MyMod::enable() {
     }
     getSelf().getLogger().info("Mod enabled");
     BA::Command::RegisterCommands();
+    BA::registerScriptApi();
 
     return true;
 }
