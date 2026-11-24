@@ -54,7 +54,21 @@ PostgreSQLDatabase::~PostgreSQLDatabase() {
     close();
 }
 
+bool PostgreSQLDatabase::ensureConnection() {
+    if (!conn_) return false;
+    if (PQstatus(conn_) == CONNECTION_OK) return true;
+    if (transactionActive_) return false;
+
+    PQreset(conn_);
+    if (PQstatus(conn_) == CONNECTION_OK) return true;
+
+    NativeMod::current()->getLogger().error("PostgreSQL 重新连接失败: {}", PQerrorMessage(conn_));
+    return false;
+}
+
 bool PostgreSQLDatabase::execute(const string& sql) {
+    std::lock_guard lock(connectionMutex_);
+    if (!ensureConnection()) return false;
     auto& logger = NativeMod::current()->getLogger();
     logger.debug("PostgreSQL 执行: {}", sql);
 
@@ -83,6 +97,8 @@ bool PostgreSQLDatabase::execute(const string& sql) {
 }
 
 vector<vector<string>> PostgreSQLDatabase::query(const string& sql) {
+    std::lock_guard lock(connectionMutex_);
+    if (!ensureConnection()) return {};
     auto& logger = NativeMod::current()->getLogger();
     logger.debug("PostgreSQL 查询: {}", sql);
 
@@ -112,6 +128,7 @@ vector<vector<string>> PostgreSQLDatabase::query(const string& sql) {
 }
 
 void PostgreSQLDatabase::close() {
+    std::lock_guard lock(connectionMutex_);
     auto& logger = NativeMod::current()->getLogger();
     if (conn_) {
         logger.info("正在关闭 PostgreSQL 连接");
@@ -125,29 +142,27 @@ DatabaseType PostgreSQLDatabase::getType() const {
     return DatabaseType::PostgreSQL;
 }
 
-bool PostgreSQLDatabase::executePrepared(const string& sql, const vector<string>& params) {
+bool PostgreSQLDatabase::executePrepared(const string& sql, const SqlParams& params) {
+    std::lock_guard lock(connectionMutex_);
+    if (!ensureConnection()) return false;
     auto& logger = NativeMod::current()->getLogger();
-string processedSql = replacePlaceholders(sql);
-logger.debug("PostgreSQL 执行预处理语句: {}", processedSql);
+    string processedSql = replacePlaceholders(sql);
+    logger.debug("PostgreSQL 执行预处理语句: {}", processedSql);
 
     vector<const char*> paramValues;
-    vector<int> paramLengths;
-    vector<int> paramFormats;
-
+    paramValues.reserve(params.size());
     for (const auto& param : params) {
-        paramValues.push_back(param.c_str());
-        paramLengths.push_back(static_cast<int>(param.length()));
-        paramFormats.push_back(0); // 0 for text format
+        paramValues.push_back(param ? param->c_str() : nullptr);
     }
 
-PGresult* res = PQexecParams(
+    PGresult* res = PQexecParams(
         conn_,
         processedSql.c_str(),
         static_cast<int>(params.size()),
         nullptr, // paramTypes[] - infer from usage
         paramValues.data(),
-        paramLengths.data(),
-        paramFormats.data(),
+        nullptr, // paramLengths[] - unused for text format
+        nullptr, // paramFormats[] - text format
         0        // resultFormat - 0 for text
     );
 
@@ -163,30 +178,28 @@ PGresult* res = PQexecParams(
     return true;
 }
 
-vector<vector<string>> PostgreSQLDatabase::queryPrepared(const string& sql, const vector<string>& params) {
+vector<vector<string>> PostgreSQLDatabase::queryPrepared(const string& sql, const SqlParams& params) {
+    std::lock_guard lock(connectionMutex_);
+    if (!ensureConnection()) return {};
     auto& logger = NativeMod::current()->getLogger();
-string processedSql = replacePlaceholders(sql);
-logger.debug("PostgreSQL 查询预处理语句: {}", processedSql);
+    string processedSql = replacePlaceholders(sql);
+    logger.debug("PostgreSQL 查询预处理语句: {}", processedSql);
 
     vector<vector<string>> result;
     vector<const char*> paramValues;
-    vector<int> paramLengths;
-    vector<int> paramFormats;
-
+    paramValues.reserve(params.size());
     for (const auto& param : params) {
-        paramValues.push_back(param.c_str());
-        paramLengths.push_back(static_cast<int>(param.length()));
-        paramFormats.push_back(0); // 0 for text format
+        paramValues.push_back(param ? param->c_str() : nullptr);
     }
 
-PGresult* res = PQexecParams(
+    PGresult* res = PQexecParams(
         conn_,
         processedSql.c_str(),
         static_cast<int>(params.size()),
         nullptr, // paramTypes[] - infer from usage
         paramValues.data(),
-        paramLengths.data(),
-        paramFormats.data(),
+        nullptr, // paramLengths[] - unused for text format
+        nullptr, // paramFormats[] - text format
         0        // resultFormat - 0 for text
     );
 
@@ -263,6 +276,7 @@ bool PostgreSQLDatabase::beginTransaction() {
 }
 
 bool PostgreSQLDatabase::commit() {
+    if (PQtransactionStatus(conn_) == PQTRANS_INERROR) return false;
     return execute("COMMIT;");
 }
 
@@ -282,38 +296,11 @@ PostgreSQLDatabase::fetchDirectPermissionsOfGroups(const std::vector<std::string
     std::string sql = "SELECT group_id, permission_rule FROM group_permissions WHERE group_id IN ("
                     + getInClausePlaceholders(groupIds.size()) + ");";
 
-    // PQexecParams 需要 const char* 数组作为参数值
-    std::vector<const char*> paramValues;
-    paramValues.reserve(groupIds.size());
-    for (const auto& id : groupIds) {
-        paramValues.push_back(id.c_str());
+    auto rows = queryPrepared(sql, SqlParams(groupIds.begin(), groupIds.end()));
+    for (const auto& row : rows) {
+        result[row[0]].push_back(row[1]);
     }
 
-    PGresult* res = PQexecParams(
-        conn_,
-        sql.c_str(),
-        static_cast<int>(paramValues.size()),
-        nullptr, // paramTypes[] - infer from usage
-        paramValues.data(),
-        nullptr, // paramLengths[] - null for text format
-        nullptr, // paramFormats[] - null for text format
-        0        // resultFormat - 0 for text
-    );
-
-    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
-        ll::mod::NativeMod::current()->getLogger().error("PostgreSQL 批量查询组权限失败: {}. 语句: {}", PQerrorMessage(conn_), sql);
-        PQclear(res);
-        return result;
-    }
-
-    int nRows = PQntuples(res);
-    for (int i = 0; i < nRows; ++i) {
-        std::string groupId    = PQgetvalue(res, i, 0);
-        std::string permission = PQgetvalue(res, i, 1);
-        result[groupId].push_back(permission);
-    }
-
-    PQclear(res);
     return result;
 }
 

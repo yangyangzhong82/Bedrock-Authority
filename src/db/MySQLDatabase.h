@@ -20,37 +20,46 @@ public:
 
     bool execute(const std::string& sql) override;
     std::vector<std::vector<std::string>> query(const std::string& sql) override;
-    bool executePrepared(const std::string& sql, const std::vector<std::string>& params) override;
-    std::vector<std::vector<std::string>> queryPrepared(const std::string& sql, const std::vector<std::string>& params) override;
+    bool executePrepared(const std::string& sql, const SqlParams& params) override;
+    std::vector<std::vector<std::string>> queryPrepared(const std::string& sql, const SqlParams& params) override;
     void close() override;
 
     virtual DatabaseType getType() const override;
 
-    // 新增：获取创建表的 SQL 语句
+    // 获取创建表的 SQL 语句
     std::string getCreateTableSql(const std::string& tableName, const std::string& columns) const override;
-    // 新增：获取添加列的 SQL 语句
+    // 获取添加列的 SQL 语句
     std::string getAddColumnSql(const std::string& tableName, const std::string& columnName, const std::string& columnDefinition) const override;
-    // 新增：获取创建索引的 SQL 语句
+    // 获取创建索引的 SQL 语句
     std::string getCreateIndexSql(const std::string& indexName, const std::string& tableName, const std::string& columnName) const override;
-    // 新增：获取插入或忽略冲突的 SQL 语句 (用于 ON CONFLICT / INSERT IGNORE)
+    // 获取插入或忽略冲突的 SQL 语句 (用于 ON CONFLICT / INSERT IGNORE)
     std::string getInsertOrIgnoreSql(const std::string& tableName, const std::string& columns, const std::string& values, const std::string& conflictColumns) const override;
-    // 新增：获取自增主键的数据库方言定义
+    // 获取自增主键的数据库方言定义
     std::string getAutoIncrementPrimaryKeyDefinition() const override;
 
-    // 新增：获取 IN 子句的占位符字符串 (例如：?, ?, ?)
+    // 获取 IN 子句的占位符字符串 (例如：?, ?, ?)
     std::string getInClausePlaceholders(size_t count) const override;
-
-    // IDatabase 事务接口实现
-    bool beginTransaction() override;
-    bool commit() override;
-    bool rollback() override;
 
     // 批量接口实现
     std::unordered_map<std::string, std::vector<std::string>>
     fetchDirectPermissionsOfGroups(const std::vector<std::string>& groupIds) override;
 
 private:
-    MYSQL* conn_;
+    bool beginTransaction() override;
+    bool commit() override;
+    bool rollback() override;
+
+    bool connect();
+    bool ensureConnection();
+    void recordConnectionError(unsigned int error);
+
+    std::string host_;
+    std::string user_;
+    std::string password_;
+    std::string database_;
+    unsigned int port_;
+    bool needsReconnect_ = false;
+    MYSQL* conn_ = nullptr;
 };
 
 } // namespace db

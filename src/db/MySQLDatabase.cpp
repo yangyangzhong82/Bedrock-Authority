@@ -1,4 +1,5 @@
 #include "db/MySQLDatabase.h"
+#include <errmsg.h>
 #include <stdexcept>
 #include <string>
 #include <algorithm> // for std::search
@@ -20,25 +21,78 @@ bool containsCaseInsensitive(const std::string& haystack, const std::string& nee
 namespace BA {
 namespace db {
 
+namespace {
+bool initializeMySQLThread() {
+    struct ThreadContext {
+        bool initialized = mysql_thread_init() == 0;
+        ~ThreadContext() {
+            if (initialized) mysql_thread_end();
+        }
+    };
+
+    thread_local ThreadContext context;
+    return context.initialized;
+}
+
+std::vector<MYSQL_BIND> makeParameterBindings(const SqlParams& params, std::vector<unsigned long>& lengths) {
+    std::vector<MYSQL_BIND> bindings(params.size());
+    for (size_t i = 0; i < params.size(); ++i) {
+        auto& binding = bindings[i];
+        const auto& param = params[i];
+        binding.buffer_type = param ? MYSQL_TYPE_STRING : MYSQL_TYPE_NULL;
+        if (param) {
+            binding.buffer = const_cast<char*>(param->c_str());
+            lengths[i] = static_cast<unsigned long>(param->size());
+            binding.length = &lengths[i];
+        }
+    }
+    return bindings;
+}
+} // namespace
+
 MySQLDatabase::MySQLDatabase(const std::string& host,
                              const std::string& user,
                              const std::string& password,
                              const std::string& database,
                               unsigned int port)
-    : conn_(mysql_init(nullptr)) {
+    : host_(host), user_(user), password_(password), database_(database), port_(port) {
+    if (!connect()) throw std::runtime_error("连接到 MySQL 失败");
+}
+
+bool MySQLDatabase::connect() {
     auto& logger = ll::mod::NativeMod::current()->getLogger();
-    logger.info("正在初始化 MySQL 连接到 {}:{} 数据库={} 用户={}", host, port, database, user);
+    logger.info("正在初始化 MySQL 连接到 {}:{} 数据库={} 用户={}", host_, port_, database_, user_);
+    conn_ = mysql_init(nullptr);
     if (conn_ == nullptr) {
         logger.error("初始化 MySQL 连接失败");
-        throw std::runtime_error("初始化 MySQL 连接失败");
+        return false;
     }
-    if (!mysql_real_connect(conn_, host.c_str(), user.c_str(), password.c_str(), database.c_str(), port, nullptr, 0)) {
-        std::string err = mysql_error(conn_);
-        logger.error("连接到 MySQL 失败: {}", err);
+    if (!initializeMySQLThread()
+        || !mysql_real_connect(conn_, host_.c_str(), user_.c_str(), password_.c_str(), database_.c_str(), port_, nullptr, 0)) {
+        logger.error("连接到 MySQL 失败: {}", mysql_error(conn_));
         mysql_close(conn_);
-        throw std::runtime_error("连接到 MySQL 失败: " + err);
+        conn_ = nullptr;
+        return false;
     }
+    needsReconnect_ = false;
     logger.info("成功连接到 MySQL");
+    return true;
+}
+
+bool MySQLDatabase::ensureConnection() {
+    if (!initializeMySQLThread()) return false;
+    if (!needsReconnect_) return conn_ != nullptr;
+    if (transactionActive_) return false;
+
+    if (conn_) {
+        mysql_close(conn_);
+        conn_ = nullptr;
+    }
+    return connect();
+}
+
+void MySQLDatabase::recordConnectionError(unsigned int error) {
+    if (error == CR_SERVER_GONE_ERROR || error == CR_SERVER_LOST) needsReconnect_ = true;
 }
 
 MySQLDatabase::~MySQLDatabase() {
@@ -46,10 +100,13 @@ MySQLDatabase::~MySQLDatabase() {
 }
 
 bool MySQLDatabase::execute(const std::string& sql) {
+    std::lock_guard lock(connectionMutex_);
+    if (!ensureConnection()) return false;
     auto& logger = ll::mod::NativeMod::current()->getLogger();
     logger.debug("MySQL 执行: {}", sql); // 对 std::string 使用 {}
     if (mysql_query(conn_, sql.c_str()) != 0) {
         unsigned int error_code = mysql_errno(conn_); // 获取错误代码
+        recordConnectionError(error_code);
         std::string error_msg = mysql_error(conn_); // 获取错误消息
          // 检查 "Duplicate entry ..." 错误 (ER_DUP_ENTRY - 1062)，通常在 ALTER TABLE 使用默认值创建重复项时发生
          if (error_code == 1062 && containsCaseInsensitive(sql, "ALTER TABLE")) {
@@ -77,16 +134,20 @@ bool MySQLDatabase::execute(const std::string& sql) {
 }
 
 std::vector<std::vector<std::string>> MySQLDatabase::query(const std::string& sql) {
+    std::lock_guard lock(connectionMutex_);
+    if (!ensureConnection()) return {};
     auto& logger = ll::mod::NativeMod::current()->getLogger();
     logger.debug("MySQL 查询: {}", sql); // 对 std::string 使用 {}
     std::vector<std::vector<std::string>> result;
     if (mysql_query(conn_, sql.c_str()) != 0) {
+        recordConnectionError(mysql_errno(conn_));
         std::string error_msg = mysql_error(conn_); // 先获取错误消息
         logger.error("MySQL 查询错误: {}", error_msg); // 使用 {} 占位符记录 std::string
         return result;
     }
     MYSQL_RES* res = mysql_store_result(conn_);
     if (res == nullptr) {
+        recordConnectionError(mysql_errno(conn_));
         logger.warn("MySQL 查询未返回结果集");
         return result;
     }
@@ -105,8 +166,11 @@ std::vector<std::vector<std::string>> MySQLDatabase::query(const std::string& sq
 }
 
 void MySQLDatabase::close() {
+    std::lock_guard lock(connectionMutex_);
+    needsReconnect_ = false;
     auto& logger = ll::mod::NativeMod::current()->getLogger();
     if (conn_) {
+        initializeMySQLThread();
         logger.info("正在关闭 MySQL 连接");
         mysql_close(conn_);
         conn_ = nullptr;
@@ -119,18 +183,22 @@ DatabaseType MySQLDatabase::getType() const {
 }
 
 
-bool MySQLDatabase::executePrepared(const std::string& sql, const std::vector<std::string>& params) {
+bool MySQLDatabase::executePrepared(const std::string& sql, const SqlParams& params) {
+    std::lock_guard lock(connectionMutex_);
+    if (!ensureConnection()) return false;
     auto& logger = ll::mod::NativeMod::current()->getLogger();
     logger.debug("MySQL 执行预处理语句: {}", sql);
 
     MYSQL_STMT* stmt = mysql_stmt_init(conn_);
     if (!stmt) {
+        recordConnectionError(mysql_errno(conn_));
         logger.error("MySQL mysql_stmt_init 失败");
         return false;
     }
 
     // 显式转换 sql.length() 为 unsigned long
     if (mysql_stmt_prepare(stmt, sql.c_str(), static_cast<unsigned long>(sql.length())) != 0) {
+        recordConnectionError(mysql_stmt_errno(stmt));
         std::string error_msg = mysql_stmt_error(stmt); // 先获取错误消息
         logger.error("MySQL mysql_stmt_prepare 失败: {}", error_msg); // 使用 {} 占位符记录 std::string
         mysql_stmt_close(stmt);
@@ -138,17 +206,8 @@ bool MySQLDatabase::executePrepared(const std::string& sql, const std::vector<st
     }
 
     // 绑定参数
-    std::vector<MYSQL_BIND> bind(params.size());
-    std::vector<unsigned long> lengths(params.size()); // 存储绑定长度
-    for (size_t i = 0; i < params.size(); ++i) {
-        bind[i] = {}; // 零初始化
-        bind[i].buffer_type = MYSQL_TYPE_STRING;
-        bind[i].buffer = const_cast<char*>(params[i].c_str());
-        // 显式转换 params[i].length() 为 unsigned long
-        lengths[i] = static_cast<unsigned long>(params[i].length());
-        bind[i].length = &lengths[i];
-        bind[i].is_null = 0;
-    }
+    std::vector<unsigned long> lengths(params.size());
+    auto bind = makeParameterBindings(params, lengths);
 
     if (mysql_stmt_bind_param(stmt, bind.data()) != 0) {
         logger.error("MySQL mysql_stmt_bind_param 失败: {}", mysql_stmt_error(stmt));
@@ -159,6 +218,7 @@ bool MySQLDatabase::executePrepared(const std::string& sql, const std::vector<st
     // 执行
     if (mysql_stmt_execute(stmt) != 0) {
         unsigned int error_code = mysql_stmt_errno(stmt); // 获取错误代码
+        recordConnectionError(error_code);
         std::string error_msg = mysql_stmt_error(stmt); // 获取错误消息
         if (error_code == 1062) { // ER_DUP_ENTRY 表示重复键
             logger.warn("MySQL executePrepared 重复条目已忽略: {}", error_msg);
@@ -178,36 +238,31 @@ bool MySQLDatabase::executePrepared(const std::string& sql, const std::vector<st
 }
 
 
-std::vector<std::vector<std::string>> MySQLDatabase::queryPrepared(const std::string& sql, const std::vector<std::string>& params) {
+std::vector<std::vector<std::string>> MySQLDatabase::queryPrepared(const std::string& sql, const SqlParams& params) {
+    std::lock_guard lock(connectionMutex_);
+    if (!ensureConnection()) return {};
     auto& logger = ll::mod::NativeMod::current()->getLogger();
     logger.debug("MySQL 查询预处理语句: {}", sql);
     std::vector<std::vector<std::string>> result;
 
     MYSQL_STMT* stmt = mysql_stmt_init(conn_);
     if (!stmt) {
+        recordConnectionError(mysql_errno(conn_));
         logger.error("MySQL mysql_stmt_init 失败");
         return result;
     }
 
     // 显式转换 sql.length() 为 unsigned long
     if (mysql_stmt_prepare(stmt, sql.c_str(), static_cast<unsigned long>(sql.length())) != 0) {
+        recordConnectionError(mysql_stmt_errno(stmt));
         logger.error("MySQL mysql_stmt_prepare 失败: {}", mysql_stmt_error(stmt));
         mysql_stmt_close(stmt);
         return result;
     }
 
     // 绑定参数
-    std::vector<MYSQL_BIND> param_bind(params.size());
     std::vector<unsigned long> param_lengths(params.size());
-    for (size_t i = 0; i < params.size(); ++i) {
-        param_bind[i] = {};
-        param_bind[i].buffer_type = MYSQL_TYPE_STRING;
-        param_bind[i].buffer = const_cast<char*>(params[i].c_str());
-        // 显式转换 params[i].length() 为 unsigned long
-        param_lengths[i] = static_cast<unsigned long>(params[i].length());
-        param_bind[i].length = &param_lengths[i];
-        param_bind[i].is_null = 0;
-    }
+    auto param_bind = makeParameterBindings(params, param_lengths);
 
     if (mysql_stmt_bind_param(stmt, param_bind.data()) != 0) {
         logger.error("MySQL mysql_stmt_bind_param 失败: {}", mysql_stmt_error(stmt));
@@ -217,6 +272,7 @@ std::vector<std::vector<std::string>> MySQLDatabase::queryPrepared(const std::st
 
     // 执行
     if (mysql_stmt_execute(stmt) != 0) {
+        recordConnectionError(mysql_stmt_errno(stmt));
         logger.error("MySQL mysql_stmt_execute 失败: {}", mysql_stmt_error(stmt));
         mysql_stmt_close(stmt);
         return result;
@@ -270,6 +326,7 @@ std::vector<std::vector<std::string>> MySQLDatabase::queryPrepared(const std::st
 
     // 存储结果以允许获取
     if (mysql_stmt_store_result(stmt) != 0) {
+         recordConnectionError(mysql_stmt_errno(stmt));
          logger.error("MySQL mysql_stmt_store_result 失败: {}", mysql_stmt_error(stmt));
          mysql_free_result(meta_result);
          mysql_stmt_close(stmt);
@@ -386,7 +443,7 @@ MySQLDatabase::fetchDirectPermissionsOfGroups(const std::vector<std::string>& gr
     std::string sql = "SELECT group_id, permission_rule FROM group_permissions WHERE group_id IN ("
                     + getInClausePlaceholders(groupIds.size()) + ");";
 
-    auto rows = queryPrepared(sql, groupIds);
+    auto rows = queryPrepared(sql, SqlParams(groupIds.begin(), groupIds.end()));
     for (const auto& row : rows) {
         if (row.size() == 2) {
             result[row[0]].push_back(row[1]);

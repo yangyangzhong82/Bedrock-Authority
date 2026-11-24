@@ -3,11 +3,11 @@
 #include "ll/api/mod/NativeMod.h"
 #include "permission/PermissionCache.h"
 #include "permission/PermissionStorage.h"
-#include <set>          
-#include <string>     
+#include <set>
+#include <string>
 #include <unordered_map>
-#include <utility>    
-#include <vector>       
+#include <utility>
+#include <vector>
 
 
 namespace BA {
@@ -202,7 +202,10 @@ void AsyncCacheInvalidator::processTasks() {
                 logger.debug("AsyncCacheInvalidator: 从待处理集合中移除 GROUP_MODIFIED 任务，组: \'{}\'.", task.data);
             } else if (task.type == CacheInvalidationTaskType::PLAYER_GROUP_CHANGED) {
                 m_pendingPlayerGroupChangedTasks.erase(task.data);
-                logger.debug("AsyncCacheInvalidator: 从待处理集合中移除 PLAYER_GROUP_CHANGED 任务，玩家: \'{}\'.", task.data);
+                logger.debug(
+                    "AsyncCacheInvalidator: 从待处理集合中移除 PLAYER_GROUP_CHANGED 任务，玩家: \'{}\'.",
+                    task.data
+                );
             } else if (task.type == CacheInvalidationTaskType::ALL_GROUPS_MODIFIED) {
                 m_allGroupsModifiedPending = false;
                 logger.debug("AsyncCacheInvalidator: 从待处理集合中移除 ALL_GROUPS_MODIFIED 任务。");
@@ -216,8 +219,11 @@ void AsyncCacheInvalidator::processTasks() {
                 // 组的权限或继承关系发生变化。
                 // 这会影响组本身、其所有子组以及这些组中的所有玩家。
                 std::set<std::string> affectedGroups = m_cache.getChildGroupsRecursive(task.data);
-                logger
-                    .debug("AsyncCacheInvalidator: 组 \'{}\' 及其子组共 {} 个受影响。", task.data, affectedGroups.size());
+                logger.debug(
+                    "AsyncCacheInvalidator: 组 \'{}\' 及其子组共 {} 个受影响。",
+                    task.data,
+                    affectedGroups.size()
+                );
                 for (const auto& groupName : affectedGroups) {
                     m_cache.invalidateGroupPermissions(groupName);
                     logger.debug("AsyncCacheInvalidator: 使组 \'{}\' 的权限缓存失效。", groupName);
@@ -243,7 +249,7 @@ void AsyncCacheInvalidator::processTasks() {
             }
             case CacheInvalidationTaskType::PLAYER_GROUP_CHANGED: {
                 logger.debug("AsyncCacheInvalidator: 正在处理 PLAYER_GROUP_CHANGED 任务，玩家: \'{}\'.", task.data);
-                // 玩家被添加/从组中移除。
+
                 m_cache.invalidatePlayerPermissions(task.data);
                 m_cache.invalidatePlayerGroups(task.data);
                 logger.debug("AsyncCacheInvalidator: 使玩家 \'{}\' 的权限和组缓存失效。", task.data);
@@ -251,7 +257,7 @@ void AsyncCacheInvalidator::processTasks() {
             }
             case CacheInvalidationTaskType::ALL_GROUPS_MODIFIED: {
                 logger.debug("AsyncCacheInvalidator: 正在处理 ALL_GROUPS_MODIFIED 任务。");
-                // 全局性变化，例如新的权限注册。
+
                 m_cache.invalidateAllGroupPermissions();
                 m_cache.invalidateAllPlayerPermissions();
                 logger.debug("AsyncCacheInvalidator: 使所有组权限和所有玩家权限缓存失效。");
@@ -259,13 +265,13 @@ void AsyncCacheInvalidator::processTasks() {
             }
             case CacheInvalidationTaskType::ALL_PLAYERS_MODIFIED: {
                 logger.debug("AsyncCacheInvalidator: 正在处理 ALL_PLAYERS_MODIFIED 任务。");
-                // 影响所有玩家的变化，例如默认权限值改变。
+
                 m_cache.invalidateAllPlayerPermissions();
                 logger.debug("AsyncCacheInvalidator: 使所有玩家权限缓存失效。");
                 break;
             }
             case CacheInvalidationTaskType::SHUTDOWN:
-                // 此情况已在循环开始时处理
+
                 break;
             }
         } catch (const std::exception& e) {
@@ -287,7 +293,6 @@ std::vector<std::string> AsyncCacheInvalidator::getAffectedPlayersByGroup(const 
     auto&                 logger = ::ll::mod::NativeMod::current()->getLogger();
     std::set<std::string> affectedPlayerUuids;
 
-    // 从缓存中获取所有后代组（包括组本身）。
     std::set<std::string> allRelatedGroups = m_cache.getChildGroupsRecursive(groupName);
 
     logger.debug(
@@ -296,8 +301,7 @@ std::vector<std::string> AsyncCacheInvalidator::getAffectedPlayersByGroup(const 
         allRelatedGroups.size()
     );
 
-    // 对于每个相关组，从存储层获取其成员。
-    // 首先，收集所有组名以批量查询其ID。
+
     std::set<std::string> groupNamesToFetchIds;
     for (const auto& gName : allRelatedGroups) {
         groupNamesToFetchIds.insert(gName);

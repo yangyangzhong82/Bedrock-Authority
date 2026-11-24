@@ -18,7 +18,14 @@ SQLiteDatabase::SQLiteDatabase(const std::string& dbPath) : db_(nullptr) {
     if (sqlite3_open(dbPath.c_str(), &db_) != SQLITE_OK) {
         string err(sqlite3_errmsg(db_));
         logger.error("打开 SQLite 数据库失败: {}", err);
+        sqlite3_close(db_);
         throw runtime_error("打开 SQLite 数据库失败: " + err);
+    }
+    if (!execute("PRAGMA busy_timeout = 5000;")
+        || !execute("PRAGMA foreign_keys = ON;")
+        || !execute("PRAGMA journal_mode = WAL;")) {
+        close();
+        throw runtime_error("SQLite 连接设置失败");
     }
     logger.info("SQLite 数据库已成功打开");
 }
@@ -26,6 +33,7 @@ SQLiteDatabase::SQLiteDatabase(const std::string& dbPath) : db_(nullptr) {
 SQLiteDatabase::~SQLiteDatabase() { close(); }
 
 bool SQLiteDatabase::execute(const std::string& sql) {
+    std::lock_guard lock(connectionMutex_);
     auto& logger = NativeMod::current()->getLogger();
     logger.debug("正在执行 SQL: {}", sql);
     char* errMsg = nullptr;
@@ -58,6 +66,7 @@ bool SQLiteDatabase::execute(const std::string& sql) {
 }
 
 std::vector<std::vector<std::string>> SQLiteDatabase::query(const std::string& sql) {
+    std::lock_guard lock(connectionMutex_);
     auto& logger = NativeMod::current()->getLogger();
     logger.debug("正在查询 SQL: {}", sql);
     sqlite3_stmt*          stmt = nullptr;
@@ -81,6 +90,7 @@ std::vector<std::vector<std::string>> SQLiteDatabase::query(const std::string& s
 }
 
 void SQLiteDatabase::close() {
+    std::lock_guard lock(connectionMutex_);
     auto& logger = NativeMod::current()->getLogger();
     if (db_) {
     logger.info("正在关闭 SQLite 数据库");
@@ -90,7 +100,8 @@ void SQLiteDatabase::close() {
     }
 }
 
-bool SQLiteDatabase::executePrepared(const std::string& sql, const std::vector<std::string>& params) {
+bool SQLiteDatabase::executePrepared(const std::string& sql, const SqlParams& params) {
+    std::lock_guard lock(connectionMutex_);
     auto& logger = NativeMod::current()->getLogger();
     logger.debug("正在执行预处理 SQL: {}", sql);
     sqlite3_stmt* stmt = nullptr;
@@ -102,13 +113,16 @@ bool SQLiteDatabase::executePrepared(const std::string& sql, const std::vector<s
     }
 
     // 绑定参数
-    for (int i = 0; i < params.size(); ++i) {
-        // SQLite 绑定索引从 1 开始
-        if (sqlite3_bind_text(stmt, i + 1, params[i].c_str(), -1, SQLITE_TRANSIENT) != SQLITE_OK) {
-        logger.error("SQLite 绑定错误: {}", sqlite3_errmsg(db_));
+    int index = 1; // SQLite 绑定索引从 1 开始
+    for (const auto& param : params) {
+        int rc = param ? sqlite3_bind_text(stmt, index, param->c_str(), -1, SQLITE_TRANSIENT)
+                       : sqlite3_bind_null(stmt, index);
+        if (rc != SQLITE_OK) {
+            logger.error("SQLite 绑定错误: {}", sqlite3_errmsg(db_));
             sqlite3_finalize(stmt);
             return false;
         }
+        ++index;
     }
 
     // 执行语句
@@ -126,7 +140,8 @@ bool SQLiteDatabase::executePrepared(const std::string& sql, const std::vector<s
 }
 
 std::vector<std::vector<std::string>>
-SQLiteDatabase::queryPrepared(const std::string& sql, const std::vector<std::string>& params) {
+SQLiteDatabase::queryPrepared(const std::string& sql, const SqlParams& params) {
+    std::lock_guard lock(connectionMutex_);
     auto& logger = NativeMod::current()->getLogger();
     logger.debug("正在查询预处理 SQL: {}", sql);
     sqlite3_stmt*          stmt = nullptr;
@@ -139,18 +154,22 @@ SQLiteDatabase::queryPrepared(const std::string& sql, const std::vector<std::str
     }
 
     // 绑定参数
-    for (int i = 0; i < params.size(); ++i) {
-        // SQLite 绑定索引从 1 开始
-        if (sqlite3_bind_text(stmt, i + 1, params[i].c_str(), -1, SQLITE_TRANSIENT) != SQLITE_OK) {
-        logger.error("SQLite 绑定错误: {}", sqlite3_errmsg(db_));
+    int index = 1; // SQLite 绑定索引从 1 开始
+    for (const auto& param : params) {
+        int rc = param ? sqlite3_bind_text(stmt, index, param->c_str(), -1, SQLITE_TRANSIENT)
+                       : sqlite3_bind_null(stmt, index);
+        if (rc != SQLITE_OK) {
+            logger.error("SQLite 绑定错误: {}", sqlite3_errmsg(db_));
             sqlite3_finalize(stmt);
             return result; // 绑定错误时返回空结果
         }
+        ++index;
     }
 
     // 执行并获取行
     int cols = sqlite3_column_count(stmt);
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
+    int rc;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
         vector<string> row;
         row.reserve(cols); // 为提高效率预留空间
         for (int i = 0; i < cols; ++i) {
@@ -161,8 +180,7 @@ SQLiteDatabase::queryPrepared(const std::string& sql, const std::vector<std::str
     }
 
     // 检查执行步骤中的错误
-    int rc = sqlite3_errcode(db_);
-    if (rc != SQLITE_OK && rc != SQLITE_DONE && rc != SQLITE_ROW) {
+    if (rc != SQLITE_DONE) {
         logger.error("SQLite 查询预处理步骤错误: {}", sqlite3_errmsg(db_));
         // 结果可能部分填充，决定是否应清除或返回部分结果
         // 目前，返回错误发生前收集到的任何内容
@@ -246,7 +264,7 @@ SQLiteDatabase::fetchDirectPermissionsOfGroups(const std::vector<std::string>& g
     std::string sql = "SELECT group_id, permission_rule FROM group_permissions WHERE group_id IN ("
                     + getInClausePlaceholders(groupIds.size()) + ");";
 
-    auto rows = queryPrepared(sql, groupIds);
+    auto rows = queryPrepared(sql, SqlParams(groupIds.begin(), groupIds.end()));
     for (const auto& row : rows) {
         if (row.size() == 2) {
             result[row[0]].push_back(row[1]);

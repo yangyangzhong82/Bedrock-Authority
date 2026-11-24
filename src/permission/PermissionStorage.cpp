@@ -115,6 +115,12 @@ bool PermissionStorage::ensureTables() {
         m_db->getAddColumnSql("player_groups", "expiry_timestamp", "BIGINT NULL DEFAULT NULL"),
         "为 player_groups 表添加 expiry_timestamp 列"
     );
+    if (m_db->getType() == db::DatabaseType::SQLite) {
+        executeAndLog(
+            "UPDATE player_groups SET expiry_timestamp = NULL WHERE expiry_timestamp = '';",
+            "修正旧版 SQLite 的空字符串过期时间"
+        );
+    }
 
     // 索引
     executeAndLog(
@@ -511,22 +517,21 @@ bool PermissionStorage::addPlayerToGroup(
 ) {
     if (!m_db) return false;
 
-    // 这是一个通用的“插入或更新”逻辑
-    // 1. 先尝试删除，确保我们是从一个干净的状态开始
-    std::string deleteSql = "DELETE FROM player_groups WHERE player_uuid = ? AND group_id = ?;";
-    m_db->executePrepared(deleteSql, {playerUuid, groupId}); // 忽略结果
+    std::optional<std::string> expiry;
+    if (expiryTimestamp) expiry = std::to_string(*expiryTimestamp);
 
-    // 2. 插入新记录
-    std::string insertSql = "INSERT INTO player_groups (player_uuid, group_id, expiry_timestamp) VALUES (?, ?, ?);";
-    if (expiryTimestamp.has_value()) {
-        return m_db->executePrepared(insertSql, {playerUuid, groupId, std::to_string(*expiryTimestamp)});
-    } else {
-        // 数据库驱动应该能处理 NULL
+    const std::string insertSql =
+        "INSERT INTO player_groups (player_uuid, group_id, expiry_timestamp) VALUES (?, ?, ?) ";
+    if (m_db->getType() == db::DatabaseType::MySQL) {
         return m_db->executePrepared(
-            insertSql,
-            {playerUuid, groupId, ""}
-        ); // 假设空字符串被驱动解释为NULL，或使用特定于驱动的方法
+            insertSql + "ON DUPLICATE KEY UPDATE expiry_timestamp = ?;",
+            {playerUuid, groupId, expiry, expiry}
+        );
     }
+    return m_db->executePrepared(
+        insertSql + "ON CONFLICT (player_uuid, group_id) DO UPDATE SET expiry_timestamp = excluded.expiry_timestamp;",
+        {playerUuid, groupId, expiry}
+    );
 }
 
 /**
@@ -607,7 +612,7 @@ std::vector<std::string> PermissionStorage::fetchPlayersInGroups(const std::vect
     std::vector<std::string> players;
     std::string         placeholders = m_db->getInClausePlaceholders(groupIds.size());
     std::string         sql          = "SELECT DISTINCT player_uuid FROM player_groups WHERE group_id IN (" + placeholders + ");";
-    auto           rows         = m_db->queryPrepared(sql, groupIds);
+    auto           rows         = m_db->queryPrepared(sql, db::SqlParams(groupIds.begin(), groupIds.end()));
     for (auto& row : rows)
         if (!row.empty()) players.push_back(row[0]);
     return players;
@@ -621,7 +626,7 @@ std::vector<std::string> PermissionStorage::fetchPlayersInGroups(const std::vect
 std::unordered_map<std::string, std::string> PermissionStorage::fetchGroupIdsByNames(const std::set<std::string>& groupNames) {
     if (!m_db || groupNames.empty()) return {};
     std::unordered_map<std::string, std::string> groupNameMap;
-    std::vector<std::string>                namesVec(groupNames.begin(), groupNames.end());
+    db::SqlParams                          namesVec(groupNames.begin(), groupNames.end());
     std::string                        placeholders = m_db->getInClausePlaceholders(namesVec.size());
     std::string                        sql          = "SELECT name, id FROM permission_groups WHERE name IN (" + placeholders + ");";
     auto                          rows         = m_db->queryPrepared(sql, namesVec);
@@ -641,7 +646,7 @@ std::unordered_map<std::string, std::string> PermissionStorage::fetchGroupIdsByN
 std::unordered_map<std::string, GroupDetails> PermissionStorage::fetchGroupDetailsByNames(const std::set<std::string>& groupNames) {
     if (!m_db || groupNames.empty()) return {};
     std::unordered_map<std::string, GroupDetails> groupDetailsMap;
-    std::vector<std::string>                 namesVec(groupNames.begin(), groupNames.end());
+    db::SqlParams                           namesVec(groupNames.begin(), groupNames.end());
     std::string                         placeholders = m_db->getInClausePlaceholders(namesVec.size());
     std::string                         sql          = "SELECT id, name, description, priority FROM permission_groups WHERE name IN (" + placeholders + ");";
     auto                           rows         = m_db->queryPrepared(sql, namesVec);
@@ -672,7 +677,8 @@ std::unordered_map<std::string, GroupDetails> PermissionStorage::fetchGroupDetai
 size_t
 PermissionStorage::addPermissionsToGroup(const std::string& groupId, const std::vector<std::string>& permissionRules) {
     if (!m_db || permissionRules.empty()) return 0;
-    if (!m_db->beginTransaction()) return 0;
+    db::IDatabase::Transaction transaction(*m_db);
+    if (!transaction) return 0;
 
     size_t successCount = 0;
     std::string insertSql    = m_db->getInsertOrIgnoreSql(
@@ -689,10 +695,7 @@ PermissionStorage::addPermissionsToGroup(const std::string& groupId, const std::
         }
     }
 
-    if (!m_db->commit()) {
-        m_db->rollback();
-        return 0;
-    }
+    if (!transaction.commit()) return 0;
     return successCount;
 }
 
@@ -707,7 +710,8 @@ size_t PermissionStorage::removePermissionsFromGroup(
     const std::vector<std::string>& permissionRules
 ) {
     if (!m_db || permissionRules.empty()) return 0;
-    if (!m_db->beginTransaction()) return 0;
+    db::IDatabase::Transaction transaction(*m_db);
+    if (!transaction) return 0;
 
     size_t successCount = 0;
     std::string deleteSql    = "DELETE FROM group_permissions WHERE group_id = ? AND permission_rule = ?;";
@@ -719,10 +723,7 @@ size_t PermissionStorage::removePermissionsFromGroup(
         }
     }
 
-    if (!m_db->commit()) {
-        m_db->rollback();
-        return 0;
-    }
+    if (!transaction.commit()) return 0;
     return successCount;
 }
 
@@ -734,7 +735,8 @@ size_t PermissionStorage::removePermissionsFromGroup(
  */
 size_t PermissionStorage::addPlayerToGroups(const std::string& playerUuid, const std::vector<std::pair<std::string, std::string>>& groupInfos) {
     if (!m_db || groupInfos.empty()) return 0;
-    if (!m_db->beginTransaction()) return 0;
+    db::IDatabase::Transaction transaction(*m_db);
+    if (!transaction) return 0;
 
     size_t successCount = 0;
     std::string insertSql =
@@ -747,10 +749,7 @@ size_t PermissionStorage::addPlayerToGroups(const std::string& playerUuid, const
         }
     }
 
-    if (!m_db->commit()) {
-        m_db->rollback();
-        return 0;
-    }
+    if (!transaction.commit()) return 0;
     return successCount;
 }
 
@@ -763,7 +762,8 @@ size_t PermissionStorage::addPlayerToGroups(const std::string& playerUuid, const
 size_t
 PermissionStorage::removePlayerFromGroups(const std::string& playerUuid, const std::vector<std::string>& groupIds) {
     if (!m_db || groupIds.empty()) return 0;
-    if (!m_db->beginTransaction()) return 0;
+    db::IDatabase::Transaction transaction(*m_db);
+    if (!transaction) return 0;
 
     size_t successCount = 0;
     std::string deleteSql    = "DELETE FROM player_groups WHERE player_uuid = ? AND group_id = ?;";
@@ -774,10 +774,7 @@ PermissionStorage::removePlayerFromGroups(const std::string& playerUuid, const s
         }
     }
 
-    if (!m_db->commit()) {
-        m_db->rollback();
-        return 0;
-    }
+    if (!transaction.commit()) return 0;
     return successCount;
 }
 
@@ -806,7 +803,7 @@ std::unordered_map<std::string, std::string> PermissionStorage::fetchGroupNamesB
     std::unordered_map<std::string, std::string> groupNameMap;
     std::string                        placeholders = m_db->getInClausePlaceholders(groupIds.size());
     std::string                        sql          = "SELECT id, name FROM permission_groups WHERE id IN (" + placeholders + ");";
-    auto                          rows         = m_db->queryPrepared(sql, groupIds);
+    auto                          rows         = m_db->queryPrepared(sql, db::SqlParams(groupIds.begin(), groupIds.end()));
     for (const auto& row : rows) {
         if (row.size() >= 2 && !row[0].empty() && !row[1].empty()) {
             groupNameMap[row[0]] = row[1];
@@ -889,13 +886,10 @@ bool PermissionStorage::updatePlayerGroupExpirationTime(
     const std::optional<long long>& expiryTimestamp
 ) {
     if (!m_db) return false;
+    std::optional<std::string> expiry;
+    if (expiryTimestamp) expiry = std::to_string(*expiryTimestamp);
     std::string sql = "UPDATE player_groups SET expiry_timestamp = ? WHERE player_uuid = ? AND group_id = ?;";
-
-    if (expiryTimestamp.has_value()) {
-        return m_db->executePrepared(sql, {std::to_string(*expiryTimestamp), playerUuid, groupId});
-    } else {
-        return m_db->executePrepared(sql, {"", playerUuid, groupId});
-    }
+    return m_db->executePrepared(sql, {expiry, playerUuid, groupId});
 }
 } // namespace internal
 } // namespace permission

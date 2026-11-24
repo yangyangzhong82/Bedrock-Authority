@@ -1,22 +1,53 @@
 #pragma once
 
+#include <mutex>
+#include <optional>
 #include <string>
-#include <vector>
 #include <unordered_map>
+#include <vector>
+
 
 namespace BA {
 namespace db {
 
-enum class DatabaseType {
-    Unknown,
-    SQLite,
-    MySQL,
-    PostgreSQL
-};
+enum class DatabaseType { Unknown, SQLite, MySQL, PostgreSQL };
+
+using SqlParams = std::vector<std::optional<std::string>>;
 
 class IDatabase {
 public:
-    virtual ~IDatabase() = default;
+    class Transaction {
+    public:
+        explicit Transaction(IDatabase& db)
+        : db_(db),
+          lock_(db.connectionMutex_),
+          active_(!db.transactionActive_ && db.beginTransaction()) {
+            if (active_) db_.transactionActive_ = true;
+        }
+
+        ~Transaction() {
+            if (active_) {
+                db_.rollback();
+                db_.transactionActive_ = false;
+            }
+        }
+
+        explicit operator bool() const { return active_; }
+
+        bool commit() {
+            if (!active_ || !db_.commit()) return false;
+            active_                = false;
+            db_.transactionActive_ = false;
+            return true;
+        }
+
+    private:
+        IDatabase&                             db_;
+        std::unique_lock<std::recursive_mutex> lock_;
+        bool                                   active_;
+    };
+
+    virtual ~IDatabase()                 = default;
     virtual DatabaseType getType() const = 0;
     /// @brief Execute a SQL statement without expecting a result set (Use executePrepared for security)
     virtual bool execute(const std::string& sql) = 0;
@@ -25,43 +56,58 @@ public:
 
     /// @brief Execute a prepared SQL statement without expecting a result set
     /// @param sql The SQL statement with placeholders (e.g., ?)
-    /// @param params The parameters to bind to the placeholders
+    /// @param params The parameters to bind to the placeholders, with nullopt for SQL NULL
     /// @return True if execution was successful, false otherwise
-    virtual bool executePrepared(const std::string& sql, const std::vector<std::string>& params) = 0;
+    virtual bool executePrepared(const std::string& sql, const SqlParams& params) = 0;
 
     /// @brief Execute a prepared SQL query and return rows of columns
     /// @param sql The SQL query with placeholders (e.g., ?)
-    /// @param params The parameters to bind to the placeholders
+    /// @param params The parameters to bind to the placeholders, with nullopt for SQL NULL
     /// @return A vector of rows, where each row is a vector of column strings
-    virtual std::vector<std::vector<std::string>> queryPrepared(const std::string& sql, const std::vector<std::string>& params) = 0;
+    virtual std::vector<std::vector<std::string>> queryPrepared(const std::string& sql, const SqlParams& params) = 0;
 
     /// @brief Close the database connection
     virtual void close() = 0;
 
-    /// @brief Begin a database transaction
-    virtual bool beginTransaction() = 0;
-    /// @brief Commit the current database transaction
-    virtual bool commit() = 0;
-    /// @brief Rollback the current database transaction
-    virtual bool rollback() = 0;
-
-    // 新增：获取创建表的 SQL 语句
+    // 获取创建表的 SQL 语句
     virtual std::string getCreateTableSql(const std::string& tableName, const std::string& columns) const = 0;
-    // 新增：获取添加列的 SQL 语句
-    virtual std::string getAddColumnSql(const std::string& tableName, const std::string& columnName, const std::string& columnDefinition) const = 0;
-    // 新增：获取创建索引的 SQL 语句
-    virtual std::string getCreateIndexSql(const std::string& indexName, const std::string& tableName, const std::string& columnName) const = 0;
-    // 新增：获取插入或忽略冲突的 SQL 语句 (用于 ON CONFLICT / INSERT IGNORE)
-    virtual std::string getInsertOrIgnoreSql(const std::string& tableName, const std::string& columns, const std::string& values, const std::string& conflictColumns) const = 0;
-    // 新增：获取自增主键的数据库方言定义
+    // 获取添加列的 SQL 语句
+    virtual std::string getAddColumnSql(
+        const std::string& tableName,
+        const std::string& columnName,
+        const std::string& columnDefinition
+    ) const = 0;
+    // 获取创建索引的 SQL 语句
+    virtual std::string getCreateIndexSql(
+        const std::string& indexName,
+        const std::string& tableName,
+        const std::string& columnName
+    ) const = 0;
+    // 获取插入或忽略冲突的 SQL 语句 (用于 ON CONFLICT / INSERT IGNORE)
+    virtual std::string getInsertOrIgnoreSql(
+        const std::string& tableName,
+        const std::string& columns,
+        const std::string& values,
+        const std::string& conflictColumns
+    ) const = 0;
+    // 获取自增主键的数据库方言定义
     virtual std::string getAutoIncrementPrimaryKeyDefinition() const = 0;
 
-    // 新增：获取 IN 子句的占位符字符串 (例如：?, ?, ?)
+    // 获取 IN 子句的占位符字符串 (例如：?, ?, ?)
     virtual std::string getInClausePlaceholders(size_t count) const = 0;
-    
+
     // 批量接口
     virtual std::unordered_map<std::string, std::vector<std::string>>
     fetchDirectPermissionsOfGroups(const std::vector<std::string>& groupIds) = 0;
+
+protected:
+    std::recursive_mutex connectionMutex_;
+    bool                 transactionActive_ = false;
+
+private:
+    virtual bool beginTransaction() = 0;
+    virtual bool commit()           = 0;
+    virtual bool rollback()         = 0;
 };
 
 } // namespace db
