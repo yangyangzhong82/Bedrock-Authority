@@ -1,33 +1,66 @@
-# Bedrock Authority - 全能权限管理插件
+# Bedrock Authority
 
-**Bedrock Authority** 是一个为 Minecraft: Bedrock Edition (BDS) 设计的、功能强大且高度可扩展的权限管理插件。它提供了一套完整的工具，用于精细化控制您服务器上的玩家权限，支持多种数据库后端，并包含一个直观的 Web UI，让权限管理变得前所未有的简单。
+**Bedrock Authority** 是面向 Minecraft: Bedrock Edition（LeviLamina）的权限管理模组。它提供权限组、继承、优先级、通配符、反向权限、默认组、临时授权以及 C++ / JS 开发者接口，支持 SQLite、MySQL 和 PostgreSQL 三种数据库。
 
 ![GitHub Repo stars](https://img.shields.io/github/stars/yangyangzhong82/Bedrock-Authority?style=social)
 ![GitHub license](https://img.shields.io/github/license/yangyangzhong82/Bedrock-Authority)
 ![GitHub issues](https://img.shields.io/github/issues/yangyangzhong82/Bedrock-Authority)
 
-## ✨ 核心功能
+## 功能概览
 
-*   **强大的权限系统**: 支持通配符 (`*`) 和反向权限 (`-`)，实现灵活的权限控制。
-*   **权限组与继承**: 通过创建权限组并设置继承关系，轻松构建分层的权限结构。
-*   **优先级系统**: 解决多权限组之间的权限冲突，高优先级组的设置将覆盖低优先级组。
-*   **临时权限**: 可为玩家设置有时间限制的权限组，到期后自动移除。
-*   **多数据库支持**: 支持 **SQLite**, **MySQL**, 和 **PostgreSQL**，满足不同规模服务器的需求。
-*   **高性能缓存**: 内置高效的缓存系统，并采用异步更新策略，最大程度减少对服务器性能的影响。
-*   **Web 管理界面**: 提供一个直观的网页界面，方便您查看和管理权限组、玩家和权限。
-*   **丰富的游戏内命令**: 提供一套完整的命令，方便管理员在游戏内直接管理权限。
-*   **开发者 API**: 提供 C++ API (`PermissionManagerAPI.md`) 和脚本 API (`ScriptAPI.md`)，方便其他插件进行集成。
+- **灵活的权限规则**：支持通配符（`*`）、反向拒绝（`-`）、不区分大小写匹配，以及权限节点默认值。
+- **权限组与继承**：支持多层级权限组继承，并自动拦截循环继承。
+- **优先级覆盖**：同一玩家属于多个组时，高优先级组覆盖低优先级组；同一节点匹配多条规则时，更具体的规则优先。
+- **默认权限组**：未加入任何组的玩家（含临时组过期后）自动使用默认组权限，无需为每个玩家写库。
+- **临时授权**：支持给玩家设置有时限的权限组，到期立即失效，并由后台定时清理过期记录。
+- **多数据库后端**：内置 SQLite（开箱即用），也支持 MySQL 和 PostgreSQL。
+- **内存缓存与热重载**：权限查询走内存缓存，修改后同步失效；支持游戏内 `/ba reload` 热重载缓存与运行时配置。
+- **双语命令与细粒度授权**：支持英文与中文两套命令写法，每条管理命令都有独立的权限节点。
+- **开发者 API**：提供 C++ 接口、事件总线钩子，以及基于 LegacyRemoteCall 的脚本 API。
 
-## 💿 安装
+## 安装
 
-1.  从发布页面下载最新的 `Bedrock-Authority.zip` 文件。
-2.  解压文件，并将 `Bedrock-Authority` 文件夹放入您服务器的 `plugins` 目录下。
-3.  启动服务器，插件会自动生成默认的配置文件 `plugins/Bedrock-Authority/config.json`。
-4.  根据您的需求修改配置文件，然后重启服务器使配置生效。
+### 使用 lip（推荐）
 
-## ⚙️ 配置
+```bash
+lip install github.com/yangyangzhong82/Bedrock-Authority
+```
 
-插件的配置文件位于 `plugins/Bedrock-Authority/config.json`。以下是所有配置项的详细说明：
+### 手动安装
+
+1. 前往 [Releases](https://github.com/yangyangzhong82/Bedrock-Authority/releases) 下载对应版本的压缩包（服务端选 `server`，客户端选 `client`）。
+2. 解压并将其中的 `Bedrock-Authority` 文件夹放到 `mods/Bedrock-Authority/`。
+3. 启动一次服务器，模组会自动生成默认配置文件 `config.json`（位于 LeviLamina 为本模组分配的配置目录下，通常在 `plugins/Bedrock-Authority/config.json`）。
+4. 按需修改配置后重启服务器（或使用 `/ba reload` 重载支持的运行时项）。
+
+> 默认使用 SQLite，无需安装额外数据库软件。只有在切换到 MySQL 或 PostgreSQL 时才需要配置对应数据库服务。
+
+## 快速开始
+
+主命令为 `/bedrockauthority`，常用简写为 `/ba` 或 `/权限组`。管理员（OP）可直接执行：
+
+```text
+# 1. 创建 vip 组并继承默认组 default（启动时会自动创建）
+/ba group create vip
+/ba group inherit vip default
+
+# 2. 给 vip 组添加权限节点（支持通配符 * 和反向禁止 -）
+/ba group grant vip myplugin.fly
+/ba group grant vip -myplugin.admin.*
+
+# 3. 将玩家加入 vip 组（永久，或填小时数表示临时）
+/ba user add Steve vip
+/ba user add Alex vip 720
+
+# 4. 检查玩家是否拥有某个权限
+/ba check Steve myplugin.fly
+```
+
+完整规则讲解和全部 20 条中英文命令见 [使用手册 (USAGE.md)](USAGE.md)。
+
+## 配置说明
+
+首次启动后生成的默认 `config.json` 如下：
 
 ```json
 {
@@ -55,100 +88,48 @@
 }
 ```
 
-| 键名 | 类型 | 描述 |
-| --- | --- | --- |
-| `db_type` | string | 使用的数据库类型。可选值为 `"sqlite"`, `"mysql"`, `"postgresql"`。 |
-| `sqlite_path` | string | 当 `db_type` 为 `sqlite` 时，数据库文件的路径。 |
-| `mysql_*` | string/int | 当 `db_type` 为 `mysql` 时的数据库连接信息。 |
-| `postgresql_*` | string/int | 当 `db_type` 为 `postgresql` 时的数据库连接信息。 |
-| `http_server_enabled` | bool | 是否启用 Web 管理界面。 |
-| `http_server_host` | string | Web 服务器监听的 IP 地址。`0.0.0.0` 表示监听所有网络接口。 |
-| `http_server_port` | int | Web 服务器监听的端口。 |
-| `http_server_static_path` | string | Web UI 静态文件（HTML, CSS, JS）所在的目录。 |
-| `enable_cache_warmup` | bool | 是否在插件启动时预热缓存。启用此项可以提高首次查询的性能。 |
-| `cache_worker_threads` | int | 用于处理异步缓存更新的线程数量。 |
-| `cleanup_interval_seconds` | int | 清理过期临时权限的时间间隔（秒）。 |
-| `default_group` | string | 默认权限组名称。未显式分配任何组的玩家将自动拥有该组权限；留空 `""` 表示禁用默认组。 |
+### 生效配置项
 
-## 📖 核心概念
+| 配置项 | 类型 | 默认值 | 支持热重载 | 说明 |
+| --- | --- | --- | --- | --- |
+| `db_type` | string | `"sqlite"` | 否（需重启） | 数据库类型，可选 `"sqlite"`、`"mysql"`、`"postgresql"`。 |
+| `sqlite_path` | string | `"ba.db"` | 否（需重启） | `db_type` 为 `"sqlite"` 时的数据库文件路径。 |
+| `mysql_host` / `mysql_port` / `mysql_user` / `mysql_password` / `mysql_db` | string / int | `127.0.0.1` / `3306` / `root` / `""` / `ba` | 否（需重启） | `db_type` 为 `"mysql"` 时的连接参数。 |
+| `postgresql_host` / `postgresql_port` / `postgresql_user` / `postgresql_password` / `postgresql_db` | string / int | `127.0.0.1` / `5432` / `postgres` / `""` / `ba` | 否（需重启） | `db_type` 为 `"postgresql"` 时的连接参数。 |
+| `enable_cache_warmup` | bool | `true` | 是 | 启动或重载时是否预热缓存，加快首次权限查询。 |
+| `cleanup_interval_seconds` | int | `60` | 是（须 `> 0`） | 后台清理已过期临时成员记录的时间间隔（秒）。 |
+| `default_group` | string | `"default"` | 是 | 默认权限组名称。非空且组不存在时启动会自动创建；留空 `""` 表示禁用默认组。 |
 
-（此部分内容与 `USAGE.md` 基本相同，此处略作简化）
+### 历史保留配置项
 
-*   **权限节点**: 标识操作的字符串，如 `essentials.command.fly`。支持 `*` 通配符和 `-` 反向权限。
-*   **权限组**: 权限节点的集合，用于批量授予玩家权限。
-*   **继承**: 组可以继承另一个组的权限，形成层级关系。
-*   **优先级**: 解决权限冲突，数字越大优先级越高。
-*   **临时权限**: 玩家可以被临时加入一个组，到期后自动移除。
+以下字段为了兼容旧版配置文件仍保留在 `config.json` 中，当前版本**不会生效**，保持默认即可：
 
-## ⌨️ 命令参考
+- `http_server_enabled`、`http_server_host`、`http_server_port`、`http_server_static_path`：网页管理功能已移除。
+- `cache_worker_threads`：缓存已改为同步失效机制，不再使用后台失效线程池。
 
-主命令为 `/bedrockauthority`，别名有 `/ba` 和 `/权限组`。
+## 文档导航
 
-### 权限组管理
+- **服主 / 管理员**：[使用手册 (USAGE.md)](USAGE.md) — 权限判定规则、全部中英文命令、热重载和常见配置示例。
+- **C++ 开发者**：[C++ API 文档 (docs/PermissionManagerAPI.md)](docs/PermissionManagerAPI.md) — `PermissionManager` 接口、数据结构和权限变更事件。
+- **脚本开发者**：[脚本 API 文档 (docs/ScriptAPI.md)](docs/ScriptAPI.md) — 通过 `LegacyRemoteCall` 调用的 JavaScript 接口。
 
-| 命令 | 描述 |
-| --- | --- |
-| `/ba 创建权限组 <组名>` | 创建一个新的权限组。 |
-| `/ba 删除权限组 <组名>` | 删除一个已存在的权限组。 |
-| `/ba 设置权限组继承 <子组名> <父组名>` | 使一个组继承另一个组的权限。 |
-| `/ba 移除权限组继承 <子组名> <父组名>` | 移除两个组之间的继承关系。 |
-| `/ba 查看默认权限组` | 查看当前默认权限组（`/ba group default`）。 |
-| `/ba 设置默认权限组 <组名>` | 设置默认权限组并保存到配置（`/ba group default <组名>`）。 |
-| `/ba 清除默认权限组` | 禁用默认权限组并保存到配置（`/ba group cleardefault`）。 |
+## 从源码构建
 
-### 权限节点管理
+需要 Windows x64 环境与 [XMake](https://xmake.io/)（默认使用 `clang-cl` 工具链）：
 
-| 命令 | 描述 |
-| --- | --- |
-| `/ba 注册权限节点 <节点ID> [描述] [默认值]` | 注册一个新的权限节点。 |
-| `/ba 添加权限组节点 <组名> <节点ID>` | 为一个权限组添加一个权限节点。 |
-| `/ba 删除权限组节点 <组名> <节点ID>` | 从一个权限组中移除一个权限节点。 |
-| `/ba 列出权限组节点 <组名>` | 列出某个权限组拥有的所有权限节点。 |
+```bash
+git clone https://github.com/yangyangzhong82/Bedrock-Authority.git
+cd Bedrock-Authority
 
-### 玩家权限管理
+# 构建服务端版本（默认 target_type=server，客户端可改为 --target_type=client）
+xmake f -p windows -a x64 -m release --target_type=server
+xmake
+```
 
-| 命令 | 描述 |
-| --- | --- |
-| `/ba 加入权限组 <玩家> <组名> [时长(小时)]` | 将玩家加入权限组，可设置临时权限。 |
-| `/ba 移除权限组 <玩家> <组名>` | 将玩家从权限组中移除。 |
-| `/ba 列出玩家权限组 <玩家>` | 列出玩家所属的所有权限组。 |
-| `/ba 列出玩家权限节点 <玩家>` | 列出玩家当前生效的所有权限节点。 |
+构建完成后：
+- 模组包位于 `bin/Bedrock-Authority/`。
+- 给其他 C++ 模组链接使用的头文件与导入库位于 `bin/include/Bedrock-Authority/` 和 `bin/lib/Bedrock-Authority.lib`。
 
-*注意：玩家参数支持在线玩家的选择器（如 `@p`）和离线玩家的名称。*
+## 开源协议
 
-## 🌐 Web 管理界面
-
-如果启用了 HTTP 服务器，您可以通过浏览器访问 `http://<您的服务器IP>:<端口>` 来打开 Web 管理界面。
-
-Web UI 提供了以下功能：
-*   **仪表盘**: 展示权限系统的总体概览。
-*   **权限组管理**: 创建、删除、编辑权限组，管理权限节点和继承关系。
-*   **玩家管理**: 查看玩家所属的组，手动添加或移除玩家。
-
-## 👨‍💻 API 文档
-
-Bedrock Authority 为开发者提供了丰富的 API，方便与其他插件集成。
-
-*   **C++ API**: 详细的 C++ 接口说明请参考 [PermissionManagerAPI.md](docs/PermissionManagerAPI.md)。
-*   **脚本 API**: 如果您使用脚本插件，请参考 [ScriptAPI.md](docs/ScriptAPI.md) 来了解如何与本插件交互。
-
-## 🛠️ 构建
-
-如果您想从源代码构建此插件，请遵循以下步骤：
-
-1.  确保您已安装 [XMake](https://xmake.io/) 构建工具。
-2.  克隆本仓库：
-    ```bash
-    git clone https://github.com/yangyangzhong82/Bedrock-Authority.git
-    ```
-3.  进入项目目录并执行构建命令：
-    ```bash
-    cd Bedrock-Authority
-    xmake f -p windows -a x64 --toolchain=clang-cl
-    xmake
-    ```
-4.  构建产物将位于 `build` 目录下。
-
-## 📜 许可
-
-本插件使用 [Mozilla Public License 2.0](LICENSE) 协议开源。
+本项目基于 [Mozilla Public License 2.0 (MPL-2.0)](LICENSE) 开源。

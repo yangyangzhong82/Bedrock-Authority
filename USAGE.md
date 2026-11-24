@@ -1,180 +1,212 @@
-# Bedrock Authority 权限管理插件使用文档
+# Bedrock Authority 使用手册
 
-欢迎使用 Bedrock Authority，一个功能强大且灵活的 Minecraft Bedrock 服务器权限管理插件。本文档将指导您如何安装、配置和使用此插件来管理您服务器上的玩家权限。
+本手册面向服主和管理员，说明 Bedrock Authority 的权限判定规则、全部游戏内命令和常见配置场景。
 
 ## 目录
-- [核心概念](#核心概念)
-  - [权限节点 (Permission Nodes)](#权限节点-permission-nodes)
-  - [权限组 (Permission Groups)](#权限组-permission-groups)
-  - [继承 (Inheritance)](#继承-inheritance)
-  - [优先级 (Priority)](#优先级-priority)
-  - [临时权限 (Temporary Permissions)](#临时权限-temporary-permissions)
-- [命令参考](#命令参考)
-  - [别名](#别名)
-  - [权限组管理](#权限组管理)
-  - [权限节点管理](#权限节点管理)
-  - [玩家权限管理](#玩家权限管理)
-- [使用示例](#使用示例)
-  - [场景：创建 VIP 权限组](#场景创建-vip-权限组)
+
+- [核心概念与判定规则](#核心概念与判定规则)
+  - [权限节点、通配符与反向权限](#权限节点通配符与反向权限)
+  - [权限组与继承](#权限组与继承)
+  - [优先级与冲突判定顺序](#优先级与冲突判定顺序)
+  - [默认权限组](#默认权限组)
+  - [临时权限组](#临时权限组)
+- [命令总览](#命令总览)
+  - [命令前缀与执行权限](#命令前缀与执行权限)
+  - [权限组管理命令](#权限组管理命令)
+  - [权限节点命令](#权限节点命令)
+  - [玩家权限命令](#玩家权限命令)
+  - [检测与重载命令](#检测与重载命令)
+- [常见使用场景](#常见使用场景)
+  - [场景 1：搭建默认玩家组与 VIP 组](#场景-1搭建默认玩家组与-vip-组)
+  - [场景 2：用优先级解决多组权限冲突](#场景-2用优先级解决多组权限冲突)
+  - [场景 3：把部分管理命令下放给普通协管](#场景-3把部分管理命令下放给普通协管)
 
 ---
 
-## 核心概念
+## 核心概念与判定规则
 
-在开始使用命令之前，请先了解以下几个核心概念。
+### 权限节点、通配符与反向权限
 
-### 权限节点 (Permission Nodes)
+权限节点是用点号分隔的字符串，用来代表一项具体功能，例如 `essentials.command.fly`。
 
-权限节点是一个字符串，用于唯一标识一项操作或功能的权限，格式通常为 `插件名.功能.子功能`。例如 `myplugin.command.fly`。
+- **通配符 `*`**：匹配任意长度的任意字符。例如 `essentials.command.*` 可以匹配 `essentials.command.fly`、`essentials.command.home` 等；单独一个 `*` 匹配所有权限。
+- **反向权限 `-`**：在节点前加 `-` 表示明确拒绝。例如给某个组同时配置 `essentials.command.*` 和 `-essentials.command.ban`，成员可以使用其他命令，但不能使用 `ban`。
+- **大小写不敏感**：权限匹配不区分大小写，`MyPlugin.Fly` 和 `myplugin.fly` 视作同一节点。
+- **节点默认值**：通过插件或命令注册的权限节点可以设置默认值（`true` 或 `false`）。没有配置任何匹配规则时，按注册默认值决定；未注册的节点默认拒绝（`false`）。
 
-- **通配符**: 您可以使用 `*` 作为通配符来匹配多个权限。例如，`myplugin.command.*` 会授予所有 `myplugin.command.` 开头的权限。
-- **反向权限**: 您可以在权限节点前加上 `-` 来明确禁止某个权限。例如，一个组拥有 `myplugin.command.*` 但同时拥有 `-myplugin.command.admin`，那么该组的成员将无法使用 admin 命令。
+### 权限组与继承
 
-### 权限组 (Permission Groups)
+权限组是权限规则的集合。把玩家放进组里，玩家就获得该组的所有规则。
 
-权限组是权限节点的集合。您可以创建一个权限组（例如 `vip`），向其添加多个权限节点，然后将玩家添加到该组中，玩家便会拥有该组的所有权限。
+- 一个组可以继承一个或多个父组，自动获得父组及其祖先组的全部权限规则。
+- 系统会自动检测并拦截循环继承（例如 A 继承 B、B 再继承 A 会直接失败）。
 
-- **默认权限组**: 插件默认配置了 `default` 作为默认权限组（可在 `config.json` 的 `default_group` 中修改或留空禁用）。未显式分配任何权限组的玩家（包括临时权限组已过期的玩家）会自动拥有默认权限组及其继承链上的权限，无需为每个玩家写入数据库记录。
+### 优先级与冲突判定顺序
 
-### 继承 (Inheritance)
+玩家同时属于多个组，或者一条权限同时被多条规则匹配时，系统按以下两步决定最终结果：
 
-继承允许一个权限组拥有另一个权限组的所有权限。例如，您可以创建一个 `admin` 组，并让它继承 `vip` 组。这样，`admin` 组的成员会自动拥有 `vip` 组的所有权限，同时您还可以为 `admin` 组添加额外的管理员权限。
+1. **同名规则合并（按组优先级）**：
+   - 把玩家直接所属的组和所有继承的祖先组收集起来，按组的 `priority`（整数，越大越高）从低到高依次应用规则。
+   - 如果低优先级组有 `a.b`，高优先级组有 `-a.b`，高优先级组会覆盖低优先级组。
+2. **多条规则匹配（按规则长度）**：
+   - 合并后的规则按模式字符串长度（不含 `-` 前缀）从长到短匹配，**越具体的规则越优先**。
+   - 例如同时存在 `essentials.*`（允许）和 `-essentials.command.ban`（拒绝）时，检查 `essentials.command.ban` 会先命中更长的 `-essentials.command.ban`，结果为拒绝。
+3. **无规则命中时回退默认值**：
+   - 如果没有任何规则匹配，则使用该节点注册时的默认值；未注册则返回拒绝（`false`）。
 
-### 优先级 (Priority)
+> 小提示：当一个组通过通配符授予了一大片权限（如 `myplugin.*`），又想在同一个组或子组里禁掉其中某一项时，直接添加更具体的 `-myplugin.danger` 即可生效。
 
-当一个玩家属于多个权限组时，可能会出现权限冲突（例如，一个组授予 `a.b.c`，另一个组禁止 `-a.b.c`）。优先级就是用来解决这个问题的。
+### 默认权限组
 
-- 优先级是一个整数，**数字越大，优先级越高**。
-- 当冲突发生时，**高优先级组的设定会覆盖低优先级组的设定**。
+- 默认配置下，`config.json` 中的 `default_group` 为 `"default"`，模组启动时如果该组不存在会自动创建。
+- **触发条件**：只有当玩家**没有显式加入任何有效权限组**（包括从未入组，或临时组全部过期）时，才会自动应用默认组及其继承链上的权限。
+- 一旦玩家被显式加入了其他组（例如 `vip`），就不再自动附加默认组。因此如果希望 `vip` 也拥有普通玩家的基础权限，请让 `vip` 继承 `default`：
+  ```text
+  /ba group inherit vip default
+  ```
+- 如果不需要默认组，可执行 `/ba group cleardefault`，或在 `config.json` 中将 `default_group` 留空 `""`。
 
-### 临时权限 (Temporary Permissions)
+### 临时权限组
 
-您可以将玩家临时添加到一个权限组中。当时限到达后，玩家将自动从该组中移除。这对于销售有时限的 VIP 或临时授权非常有用。
+- 把玩家加入组时可以传入时长（单位：小时，支持小数，例如 `0.5` 表示 30 分钟）。
+- 留空或填 `0` 表示永久成员；填写大于 `0` 的时长时，至少需要 1 秒。
+- 如果玩家已经在该组中，再次执行入组命令会**更新**其过期时间。
+- 到达过期时间后，权限检查会立刻按过期处理（无需等待后台清理）；后台清理任务只负责按 `cleanup_interval_seconds` 定期从数据库删除过期记录并触发离组事件。
 
 ---
 
-## 命令参考
+## 命令总览
 
-### 别名
+### 命令前缀与执行权限
 
-主命令为 `/bedrockauthority`，为了方便使用，插件内置了以下别名：
+主命令为 `/bedrockauthority`，支持两个简写别名，三者完全等价：
+
+- `/bedrockauthority`
 - `/ba`
 - `/权限组`
 
-下面所有命令都可以使用这些别名作为前缀，例如 `/ba 创建权限组 ...`。
+每条子命令都同时支持**英文路径**和**中文指令**两种写法。
 
-### 权限组管理
+**谁能执行命令？**
+- 控制台和服务器 OP（`GameDirectors` 及以上权限等级）默认拥有全部管理命令权限。
+- 普通玩家也可以执行单条管理命令，前提是为其授予下表对应的 `bedrockauthority.admin.*` 权限节点（这些节点会在模组启动时自动注册，默认值为 `false`）。
 
-| 命令 | 描述 |
-| --- | --- |
-| `/ba 创建权限组 <组名>` | 创建一个新的权限组。 |
-| `/ba 删除权限组 <组名>` | 删除一个已存在的权限组。 |
-| `/ba 设置权限组继承 <子组名> <父组名>` | 使一个组继承另一个组的权限。 |
-| `/ba 移除权限组继承 <子组名> <父组名>` | 移除两个组之间的继承关系。 |
-| `/ba 查看默认权限组` | 查看当前生效的默认权限组（英文命令：`/ba group default`）。 |
-| `/ba 设置默认权限组 <组名>` | 设置默认权限组并保存到配置（英文命令：`/ba group default <组名>`）。 |
-| `/ba 清除默认权限组` | 禁用默认权限组机制并保存到配置（英文命令：`/ba group cleardefault`）。 |
-
-**示例:**
-- 创建一个名为 `player` 的默认权限组：
-  ```
-  /ba 创建权限组 player
-  ```
-- 创建 `vip` 组并让它继承 `player` 组：
-  ```
-  /ba 创建权限组 vip
-  /ba 设置权限组继承 vip player
-  ```
-
-### 权限节点管理
-
-| 命令 | 描述 |
-| --- | --- |
-| `/ba 注册权限节点 <节点ID> [描述] [默认值]` | 注册一个新的权限节点，供插件开发者使用。 |
-| `/ba 添加权限组节点 <组名> <节点ID>` | 为一个权限组添加一个权限节点。 |
-| `/ba 删除权限组节点 <组名> <节点ID>` | 从一个权限组中移除一个权限节点。 |
-| `/ba 列出权限组节点 <组名>` | 列出某个权限组拥有的所有权限节点（包括继承的）。 |
-
-**示例:**
-- 为 `vip` 组添加飞行权限：
-  ```
-  /ba 添加权限组节点 vip essentials.command.fly
-  ```
-- 禁止 `player` 组破坏方块：
-  ```
-  /ba 添加权限组节点 player -essentials.break
-  ```
-
-### 玩家权限管理
-
-这些命令同时支持在线玩家（使用目标选择器 `@p`, `@a` 或玩家名）和离线玩家（直接输入玩家名）。
-
-| 命令 | 描述 |
-| --- | --- |
-| `/ba 加入权限组 <玩家名> <组名> [时长(小时)]` | 将一个玩家添加到一个权限组，可选择性地设置一个以小时为单位的过期时间。 |
-| `/ba 移除权限组 <玩家名> <组名>` | 将一个玩家从权限组中移除。 |
-| `/ba 列出玩家权限组 <玩家名>` | 列出指定玩家所属的所有权限组。 |
-| `/ba 列出玩家权限节点 <玩家名>` | 列出指定玩家当前生效的所有权限节点。 |
-
-**示例:**
-- 将玩家 `Steve` 添加到 `vip` 组：
-  ```
-  /ba 加入权限组 Steve vip
-  ```
-- 将玩家 `Alex` 添加到 `vip` 组，有效期为 30 天（720 小时）：
-  ```
-  /ba 加入权限组 Alex vip 720
-  ```
-- 查看 `Steve` 当前拥有的所有权限：
-  ```
-  /ba 列出玩家权限节点 Steve
-  ```
-- 将离线玩家 `Herobrine` 从 `admin` 组移除：
-  ```
-  /ba 移除权限组 Herobrine admin
-  ```
+**玩家参数说明：**
+- 涉及 `<玩家>` 的命令既支持在线玩家选择器（如 `@p`、`@a`）和在线玩家名，也支持曾经进过服的离线玩家名（通过 LeviLamina `PlayerInfo` 解析 UUID）。
 
 ---
 
-## 使用示例
+### 权限组管理命令
 
-### 场景：创建 VIP 权限组
+| 英文命令 | 中文命令 | 所需权限节点 | 说明 |
+| --- | --- | --- | --- |
+| `/ba group create <组名>` | `/ba 创建权限组 <组名>` | `bedrockauthority.admin.group.create` | 创建新权限组（默认优先级为 `0`）。 |
+| `/ba group delete <组名>` | `/ba 删除权限组 <组名>` | `bedrockauthority.admin.group.delete` | 删除已存在的权限组及其关联数据。 |
+| `/ba group list` | `/ba 列出所有权限组` | `bedrockauthority.admin.group.list` | 列出当前所有权限组名称。 |
+| `/ba group priority <组名> <整数>` | `/ba 设置组优先级 <组名> <整数>` | `bedrockauthority.admin.group.priority` | 设置权限组优先级，数字越大优先级越高。 |
+| `/ba group description <组名> <描述>` | `/ba 修改组描述 <组名> <描述>` | `bedrockauthority.admin.group.description` | 修改权限组的文字描述。 |
+| `/ba group nodes <组名>` | `/ba 列出权限组节点 <组名>` | `bedrockauthority.admin.group.nodes` | 列出该组最终生效的所有规则（含继承和 `-` 拒绝规则）。 |
+| `/ba group grant <组名> <节点>` | `/ba 添加权限组节点 <组名> <节点>` | `bedrockauthority.admin.group.grant` | 给组添加一条规则（可以是普通节点、通配符或 `-` 反向规则）。 |
+| `/ba group revoke <组名> <节点>` | `/ba 删除权限组节点 <组名> <节点>` | `bedrockauthority.admin.group.revoke` | 从组中删除一条已添加的直接规则（删除反向规则时需带 `-`）。 |
+| `/ba group inherit <子组> <父组>` | `/ba 设置权限组继承 <子组> <父组>` | `bedrockauthority.admin.group.inherit` | 让 `<子组>` 继承 `<父组>` 的全部权限。 |
+| `/ba group uninherit <子组> <父组>` | `/ba 移除权限组继承 <子组> <父组>` | `bedrockauthority.admin.group.uninherit` | 取消 `<子组>` 对 `<父组>` 的直接继承关系。 |
+| `/ba group default` | `/ba 查看默认权限组` | `bedrockauthority.admin.group.default` | 查看当前生效的默认权限组名称。 |
+| `/ba group default <组名>` | `/ba 设置默认权限组 <组名>` | `bedrockauthority.admin.group.default` | 将指定已存在的组设为默认权限组，并写入 `config.json`。 |
+| `/ba group cleardefault` | `/ba 清除默认权限组` | `bedrockauthority.admin.group.cleardefault` | 禁用默认权限组，并写入 `config.json`。 |
 
-假设我们想创建一个 `VIP` 等级，拥有飞行和自定义称号的权限，并且有效期为 30 天。
+> 注意：`group grant` 添加权限规则时，**不要求**节点先注册，可直接添加任意节点、通配符（如 `shop.*`）或反向规则（如 `-shop.admin`）。
 
-1.  **创建默认玩家组和 VIP 组**
-    首先，我们为所有普通玩家创建一个 `default` 组，并为 VIP 玩家创建 `vip` 组。
-    ```
-    /ba 创建权限组 default
-    /ba 创建权限组 vip
-    ```
+---
 
-2.  **设置继承关系**
-    让 `vip` 组继承 `default` 组，这样 VIP 玩家也会拥有普通玩家的所有基础权限。
-    ```
-    /ba 设置权限组继承 vip default
-    ```
+### 权限节点命令
 
-3.  **为组分配权限**
-    假设飞行权限的节点是 `essentials.fly`，自定义称号的权限是 `essentials.setnick`。
-    ```
-    /ba 添加权限组节点 vip essentials.fly
-    /ba 添加权限组节点 vip essentials.setnick
-    ```
+| 英文命令 | 中文命令 | 所需权限节点 | 说明 |
+| --- | --- | --- | --- |
+| `/ba node register <节点> [描述] [默认值]` | `/ba 注册权限节点 <节点> [描述] [默认值]` | `bedrockauthority.admin.node.register` | 注册或更新权限节点的描述与默认值（`true`/`false`，默认 `false`），同时刷新命令自动补全列表。 |
 
-4.  **将玩家添加到 VIP 组**
-    现在，一个名叫 `Steve` 的玩家购买了 30 天的 VIP。
-    30 天 = 720 小时。
-    ```
-    /ba 加入权限组 Steve vip 720
-    ```
-    `Steve` 现在就拥有了飞行和设置称号的权限。720 小时后，他将自动从 `vip` 组中移除。
+---
 
-5.  **验证权限**
-    您可以随时检查玩家的权限组和最终生效的权限。
-    ```
-    /ba 列出玩家权限组 Steve
-    /ba 列出玩家权限节点 Steve
-    ```
+### 玩家权限命令
 
-希望这份文档能帮助您更好地管理您的服务器！
+| 英文命令 | 中文命令 | 所需权限节点 | 说明 |
+| --- | --- | --- | --- |
+| `/ba user add <玩家> <组名> [小时数]` | `/ba 加入权限组 <玩家> <组名> [小时数]` | `bedrockauthority.admin.user.add` | 将玩家加入权限组；不填或填 `0` 为永久，正数（可小数）为临时时长。再次执行可更新过期时间。 |
+| `/ba user remove <玩家> <组名>` | `/ba 移除权限组 <玩家> <组名>` | `bedrockauthority.admin.user.remove` | 将玩家从指定权限组中移除。 |
+| `/ba user groups <玩家>` | `/ba 列出玩家权限组 <玩家>` | `bedrockauthority.admin.user.groups` | 查看玩家当前所属的所有权限组（无显式组时会显示默认组）。 |
+| `/ba user nodes <玩家>` | `/ba 列出玩家权限节点 <玩家>` | `bedrockauthority.admin.user.nodes` | 列出玩家当前生效的**允许**权限规则。 |
+| `/ba user expiry <玩家> <组名>` | `/ba 查看玩家组剩余时间 <玩家> <组名>` | `bedrockauthority.admin.user.expiry` | 查看玩家在指定组的剩余秒数，或是否为永久成员。 |
+
+---
+
+### 检测与重载命令
+
+| 英文命令 | 中文命令 | 所需权限节点 | 说明 |
+| --- | --- | --- | --- |
+| `/ba check <玩家> <节点>` | `/ba 检查玩家权限 <玩家> <节点>` | `bedrockauthority.admin.check` | 检查指定玩家当前是否拥有某个权限节点。 |
+| `/ba reload` | `/ba 重载` | `bedrockauthority.admin.reload` | 重载内存缓存以及 `config.json` 中的 `enable_cache_warmup`、`cleanup_interval_seconds`、`default_group`（数据库连接修改需重启服务器）。 |
+
+---
+
+## 常见使用场景
+
+### 场景 1：搭建默认玩家组与 VIP 组
+
+目标：普通玩家默认可以使用基础命令；VIP 拥有普通玩家的全部权限，额外解锁飞行和称号，有效期 30 天。
+
+```text
+# 1. 给默认组 default（启动时已自动创建）配置基础权限
+/ba group grant default essentials.home
+/ba group grant default essentials.tpa
+
+# 2. 创建 vip 组，设置更高优先级并继承 default
+/ba group create vip
+/ba group priority vip 10
+/ba group inherit vip default
+
+# 3. 给 vip 组添加专属权限
+/ba group grant vip essentials.fly
+/ba group grant vip essentials.nick
+
+# 4. 给玩家 Steve 开通 30 天 VIP（30 × 24 = 720 小时）
+/ba user add Steve vip 720
+
+# 5. 检查效果与剩余时间
+/ba check Steve essentials.fly
+/ba user expiry Steve vip
+```
+
+720 小时后，`Steve` 会自动退出 `vip` 组并回退到 `default` 组。
+
+### 场景 2：用优先级解决多组权限冲突
+
+目标：创建一个禁言/惩罚组 `muted`，即使玩家同时是 `vip`，只要加入 `muted` 就必须禁止聊天权限 `chat.send`。
+
+```text
+# 1. vip 组优先级为 10，拥有 chat.send
+/ba group grant vip chat.send
+
+# 2. 创建 muted 组，优先级设得比 vip 更高（例如 100），并添加反向权限
+/ba group create muted
+/ba group priority muted 100
+/ba group grant muted -chat.send
+
+# 3. 将违规玩家临时加入 muted 组 2 小时
+/ba user add Alex muted 2
+
+# 4. 验证：因为 muted 优先级高于 vip，结果为“没有权限”
+/ba check Alex chat.send
+```
+
+### 场景 3：把部分管理命令下放给普通协管
+
+目标：让协管组 `helper` 可以查看权限、给玩家加减组，但不能删除权限组或重载配置。
+
+```text
+/ba group create helper
+/ba group inherit helper default
+/ba group grant helper bedrockauthority.admin.check
+/ba group grant helper bedrockauthority.admin.user.groups
+/ba group grant helper bedrockauthority.admin.user.add
+/ba group grant helper bedrockauthority.admin.user.remove
+/ba user add ModPlayer helper
+```
