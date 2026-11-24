@@ -139,6 +139,7 @@ void PermissionManager::PermissionManagerImpl::reloadCache(bool warmup) {
     m_cache->invalidateAllPlayerGroups();
     m_cache->invalidateAllGroupPermissions();
     m_cache->invalidateAllPlayerPermissions();
+    refreshDefaultGroupDetails();
     if (warmup) populateAllCaches();
 }
 
@@ -329,6 +330,13 @@ bool PermissionManager::PermissionManagerImpl::createGroup(
         if (!m_storage->createGroup(name, desc, groupId)) return false;
         m_cache->storeGroup(name, groupId);
         m_cache->invalidateGroupPermissions(name);
+        {
+            std::unique_lock defaultLock(m_defaultGroupMutex);
+            if (!m_defaultGroup.empty() && m_defaultGroup == name) {
+                m_cachedDefaultGroupDetails = GroupDetails(groupId, name, desc, 0);
+                m_cache->invalidateAllPlayerPermissions();
+            }
+        }
     }
     publishChange<event::GroupCreateAfterEvent>(name, desc);
     return true;
@@ -350,6 +358,13 @@ bool PermissionManager::PermissionManagerImpl::deleteGroup(const std::string& gr
         m_cache->removeGroupFromInheritance(name);
         m_cache->invalidateGroup(name);
         m_cache->invalidatePlayerGroupsForGroup(name);
+        {
+            std::unique_lock defaultLock(m_defaultGroupMutex);
+            if (!m_defaultGroup.empty() && m_defaultGroup == name) {
+                m_cachedDefaultGroupDetails.reset();
+                m_cache->invalidateAllPlayerPermissions();
+            }
+        }
         invalidateGroupDerivedCaches(affected);
     }
     publishChange<event::GroupDeleteAfterEvent>(name);
@@ -396,6 +411,12 @@ bool PermissionManager::PermissionManagerImpl::updateGroupDescription(
     auto description = newDescription;
     if (!allowChange<event::GroupDescriptionChangeBeforeEvent>(name, description)) return false;
     if (!groupExists(name) || !m_storage->updateGroupDescription(name, description)) return false;
+    {
+        std::unique_lock defaultLock(m_defaultGroupMutex);
+        if (!m_defaultGroup.empty() && m_defaultGroup == name && m_cachedDefaultGroupDetails) {
+            m_cachedDefaultGroupDetails->description = description;
+        }
+    }
     m_cache->invalidatePlayerGroupsForGroup(name);
     publishChange<event::GroupDescriptionChangeAfterEvent>(name, description);
     return true;
@@ -596,6 +617,13 @@ bool PermissionManager::PermissionManagerImpl::setGroupPriority(const std::strin
     auto name = groupName;
     if (!allowChange<event::GroupPriorityChangeBeforeEvent>(name, priority)) return false;
     if (!groupExists(name) || !m_storage->updateGroupPriority(name, priority)) return false;
+    {
+        std::unique_lock defaultLock(m_defaultGroupMutex);
+        if (!m_defaultGroup.empty() && m_defaultGroup == name && m_cachedDefaultGroupDetails) {
+            m_cachedDefaultGroupDetails->priority = priority;
+            m_cache->invalidateAllPlayerPermissions();
+        }
+    }
     m_cache->invalidatePlayerGroupsForGroup(name);
     invalidateGroupDerivedCaches(name);
     publishChange<event::GroupPriorityChangeAfterEvent>(name, priority);
@@ -609,6 +637,55 @@ bool PermissionManager::PermissionManagerImpl::setGroupPriority(const std::strin
  */
 int PermissionManager::PermissionManagerImpl::getGroupPriority(const std::string& groupName) {
     return m_storage->fetchGroupPriority(groupName);
+}
+
+bool PermissionManager::PermissionManagerImpl::setDefaultGroup(const std::string& groupName) {
+    std::optional<GroupDetails> details;
+    if (!groupName.empty()) {
+        auto fetched = m_storage->fetchGroupDetails(groupName);
+        if (!fetched.isValid) {
+            return false;
+        }
+        details = std::move(fetched);
+    }
+    {
+        std::unique_lock lock(m_defaultGroupMutex);
+        m_defaultGroup              = groupName;
+        m_cachedDefaultGroupDetails = std::move(details);
+        m_cache->invalidateAllPlayerPermissions();
+    }
+    return true;
+}
+
+std::string PermissionManager::PermissionManagerImpl::getDefaultGroup() {
+    std::shared_lock lock(m_defaultGroupMutex);
+    return m_defaultGroup;
+}
+
+std::optional<GroupDetails> PermissionManager::PermissionManagerImpl::getDefaultGroupDetails() {
+    std::shared_lock lock(m_defaultGroupMutex);
+    return m_cachedDefaultGroupDetails;
+}
+
+void PermissionManager::PermissionManagerImpl::refreshDefaultGroupDetails() {
+    std::string defaultGroup;
+    {
+        std::shared_lock lock(m_defaultGroupMutex);
+        defaultGroup = m_defaultGroup;
+    }
+    std::optional<GroupDetails> details;
+    if (!defaultGroup.empty()) {
+        auto fetched = m_storage->fetchGroupDetails(defaultGroup);
+        if (fetched.isValid) {
+            details = std::move(fetched);
+        }
+    }
+    {
+        std::unique_lock lock(m_defaultGroupMutex);
+        if (m_defaultGroup == defaultGroup) {
+            m_cachedDefaultGroupDetails = std::move(details);
+        }
+    }
 }
 
 /**
@@ -667,14 +744,9 @@ bool PermissionManager::PermissionManagerImpl::removePlayerFromGroup(
     return leaveGroup(playerUuid, groupName, std::nullopt);
 }
 
-/**
- * @brief 获取玩家所属的组及其优先级。
- * @param playerUuid 玩家的 UUID。
- * @return 包含玩家所属组详细信息（包括优先级）的向量。
- */
 std::vector<GroupDetails>
-PermissionManager::PermissionManagerImpl::getPlayerGroupsWithPriorities(const std::string& playerUuid) {
-    // 1. 检查缓存
+PermissionManager::PermissionManagerImpl::getExplicitPlayerGroupsWithPriorities(const std::string& playerUuid) {
+    // 1. 检查缓存（仅缓存显式加入的组，默认组按当前配置动态回退）
     if (auto cachedGroups = m_cache->findPlayerGroups(playerUuid)) {
         return *cachedGroups;
     }
@@ -684,6 +756,23 @@ PermissionManager::PermissionManagerImpl::getPlayerGroupsWithPriorities(const st
     auto           groupsFromDb = m_storage->fetchPlayerGroupsWithDetails(playerUuid);
     m_cache->storePlayerGroups(playerUuid, groupsFromDb, epoch);
     return groupsFromDb;
+}
+
+/**
+ * @brief 获取玩家所属的组及其优先级（未显式分配任何组时自动回退到默认权限组）。
+ * @param playerUuid 玩家的 UUID。
+ * @return 包含玩家所属组详细信息（包括优先级）的向量。
+ */
+std::vector<GroupDetails>
+PermissionManager::PermissionManagerImpl::getPlayerGroupsWithPriorities(const std::string& playerUuid) {
+    auto groups = getExplicitPlayerGroupsWithPriorities(playerUuid);
+    if (!groups.empty()) {
+        return groups;
+    }
+    if (auto defaultDetails = getDefaultGroupDetails()) {
+        groups.push_back(*defaultDetails);
+    }
+    return groups;
 }
 
 /**

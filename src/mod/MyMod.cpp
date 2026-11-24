@@ -61,6 +61,7 @@ bool MyMod::load() {
                 getSelf().getLogger().error("PermissionManager 初始化失败，无法继续加载。");
                 return false; // 阻止加载
             }
+            applyDefaultGroupConfig(config_.default_group);
             getSelf().getLogger().info("PermissionManager initialized with the database connection.");
 
             // 初始化 CleanupScheduler
@@ -96,9 +97,11 @@ bool MyMod::reload() {
             return false;
         }
         permission::PermissionManager::getInstance().reloadCache(next.enable_cache_warmup);
+        applyDefaultGroupConfig(next.default_group);
         m_cleanupScheduler->setInterval(next.cleanup_interval_seconds);
         config_.cleanup_interval_seconds = next.cleanup_interval_seconds;
         config_.enable_cache_warmup = next.enable_cache_warmup;
+        config_.default_group = next.default_group;
         return true;
     } catch (const std::exception& e) {
         getSelf().getLogger().error("重载权限配置失败：{}", e.what());
@@ -129,6 +132,34 @@ bool MyMod::disable() {
     // 关闭 PermissionManager，停止其异步工作线程
     permission::PermissionManager::getInstance().shutdown();
     getSelf().getLogger().info("Mod disabled");
+    return true;
+}
+
+void MyMod::applyDefaultGroupConfig(const std::string& defaultGroup) {
+    auto& pm = permission::PermissionManager::getInstance();
+    if (!defaultGroup.empty()) {
+        if (!pm.groupExists(defaultGroup) && !pm.createGroup(defaultGroup, "默认权限组")) {
+            getSelf().getLogger().warn("创建默认权限组 '{}' 失败。", defaultGroup);
+        }
+        if (!pm.setDefaultGroup(defaultGroup)) {
+            getSelf().getLogger().warn("设置默认权限组 '{}' 失败。", defaultGroup);
+        }
+    } else {
+        pm.setDefaultGroup("");
+    }
+}
+
+bool MyMod::setDefaultGroupConfig(const std::string& groupName) {
+    if (!permission::PermissionManager::getInstance().setDefaultGroup(groupName)) {
+        return false;
+    }
+    config_.default_group = groupName;
+    auto configPath       = getSelf().getConfigDir();
+    configPath           /= "config.json";
+    configPath.make_preferred();
+    if (!ll::config::saveConfig(config_, configPath)) {
+        getSelf().getLogger().warn("保存默认权限组配置到 config.json 失败。");
+    }
     return true;
 }
 

@@ -28,11 +28,15 @@ public:
     /// @return True if the mod is disabled successfully.
     bool disable();
 
+    bool setDefaultGroupConfig(const std::string& groupName);
+
     // TODO: Implement this method if you need to unload the mod.
     // /// @return True if the mod is unloaded successfully.
     // bool unload();
 
 private:
+    void applyDefaultGroupConfig(const std::string& defaultGroup);
+
     ll::mod::NativeMod& mSelf;
     BA::config::Config config_;
     std::unique_ptr<db::IDatabase> db_;

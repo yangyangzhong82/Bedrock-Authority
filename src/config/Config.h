@@ -32,6 +32,9 @@ struct Config {
 
     // Cleanup Scheduler Config
     long long cleanup_interval_seconds = 60; // 定期清理任务的执行间隔（秒），默认为 1 分钟
+
+    // Default Group Config
+    std::string default_group = "default"; // 默认权限组名称（留空表示禁用默认组）
 };
 
 } // namespace config

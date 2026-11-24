@@ -266,6 +266,27 @@ void RegisterCommands() {
     addCommand<Inheritance>(cmd, "group.uninherit", "移除权限组继承", [&](auto&, auto& out, const auto& a) {
         report(out, pm.removeGroupInheritance(a.child, a.parent), "继承关系已更新。");
     });
+    addCommand<NoArgs>(cmd, "group.default", "查看默认权限组", [&](auto&, auto& out, const auto&) {
+        auto defaultGroup = pm.getDefaultGroup();
+        if (defaultGroup.empty()) {
+            out.success("当前未设置默认权限组。");
+            return;
+        }
+        out.success(
+            pm.groupExists(defaultGroup) ? fmt::format("当前默认权限组：{}", defaultGroup)
+                                         : fmt::format("当前默认权限组：{}（该组尚未创建）", defaultGroup)
+        );
+    });
+    addCommand<GroupArg>(cmd, "group.default", "设置默认权限组", [&](auto&, auto& out, const auto& a) {
+        report(
+            out,
+            MyMod::getInstance().setDefaultGroupConfig(a.group),
+            fmt::format("默认权限组已设置为 {}。", std::string(a.group))
+        );
+    });
+    addCommand<NoArgs>(cmd, "group.cleardefault", "清除默认权限组", [&](auto&, auto& out, const auto&) {
+        report(out, MyMod::getInstance().setDefaultGroupConfig(""), "已清除默认权限组。");
+    });
     addCommand<RegisterNode>(cmd, "node.register", "注册权限节点", [&](auto&, auto& out, const auto& a) {
         bool ok = pm.registerPermission(a.node, a.description, a.defaultValue);
         if (ok) refreshEnum<Node>(pm.getAllPermissions());

@@ -5,8 +5,10 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <regex>
 #include <set>
+#include <shared_mutex>
 #include <string>
 #include <vector>
 
@@ -203,6 +205,10 @@ public:
      */
     int getGroupPriority(const std::string& groupName);
 
+    // --- 默认权限组管理 ---
+    bool        setDefaultGroup(const std::string& groupName);
+    std::string getDefaultGroup();
+
     // --- 玩家管理功能 ---
     /**
      * @brief 将玩家添加到组。
@@ -311,6 +317,9 @@ private:
     void invalidateGroupDerivedCaches(const std::string& groupName);
     void invalidateGroupDerivedCaches(const std::set<std::string>& affectedGroups);
     void invalidatePlayerCaches(const std::string& playerUuid);
+    std::vector<GroupDetails>   getExplicitPlayerGroupsWithPriorities(const std::string& playerUuid);
+    std::optional<GroupDetails> getDefaultGroupDetails();
+    void                        refreshDefaultGroupDetails();
 
     // 使用 unique_ptr 来管理内部组件的生命周期，确保资源自动释放
     std::unique_ptr<internal::PermissionStorage> m_storage; // 权限存储组件
@@ -318,6 +327,11 @@ private:
 
     // 仅串行化继承图结构写操作（增删继承/删组），读路径无锁竞争且靠缓存 epoch 防陈旧回填。
     std::mutex m_graphWriteMutex;
+
+    std::string                 m_defaultGroup = "default";
+    std::optional<GroupDetails> m_cachedDefaultGroupDetails;
+    mutable std::shared_mutex   m_defaultGroupMutex;
+
     bool       m_initialized = false; // 标记权限管理器是否已初始化
 };
 

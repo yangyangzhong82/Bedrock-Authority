@@ -108,6 +108,14 @@ auto& pm = BA::permission::PermissionManager::getInstance();
 - `int getGroupPriority(const std::string& groupName)`
   **描述**: 获取组的优先级。
 
+### 默认权限组
+
+- `bool setDefaultGroup(const std::string& groupName)`
+  **描述**: 设置默认权限组。未显式分配任何组的玩家将自动拥有该组的权限，无需写入 `player_groups` 表。传入空字符串表示禁用默认权限组；如果指定的非空组不存在则返回 `false`。
+
+- `std::string getDefaultGroup()`
+  **描述**: 获取当前配置的默认权限组名称。如果未设置则返回空字符串。
+
 ### 玩家与组关系管理
 
 - `bool addPlayerToGroup(const std::string& playerUuid, const std::string& groupName)`

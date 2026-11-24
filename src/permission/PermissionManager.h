@@ -191,6 +191,19 @@ public:
      */
     BA_API int  getGroupPriority(const std::string& groupName);
 
+    // --- 默认权限组管理 ---
+    /**
+     * @brief 设置默认权限组。未显式分配任何组的玩家将自动拥有该组的权限。
+     * @param groupName 默认组名称；传入空字符串表示禁用默认权限组。
+     * @return 如果设置成功（组存在或为空字符串）则返回 true，否则返回 false。
+     */
+    BA_API bool        setDefaultGroup(const std::string& groupName);
+    /**
+     * @brief 获取当前配置的默认权限组名称。
+     * @return 默认权限组名称；如果未设置则返回空字符串。
+     */
+    BA_API std::string getDefaultGroup();
+
     // --- 玩家管理 ---
     /**
      * @brief 将玩家添加到权限组。

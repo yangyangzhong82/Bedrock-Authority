@@ -248,6 +248,10 @@ bool PermissionManager::setGroupPriority(const std::string& groupName, int prior
  */
 int PermissionManager::getGroupPriority(const std::string& groupName) { return m_pimpl->getGroupPriority(groupName); }
 
+bool PermissionManager::setDefaultGroup(const std::string& groupName) { return m_pimpl->setDefaultGroup(groupName); }
+
+std::string PermissionManager::getDefaultGroup() { return m_pimpl->getDefaultGroup(); }
+
 /**
  * @brief 将玩家添加到权限组。
  * @param playerUuid 玩家的 UUID。

@@ -50,7 +50,8 @@
     "http_server_static_path": "http_static",
     "enable_cache_warmup": true,
     "cache_worker_threads": 4,
-    "cleanup_interval_seconds": 60
+    "cleanup_interval_seconds": 60,
+    "default_group": "default"
 }
 ```
 
@@ -67,6 +68,7 @@
 | `enable_cache_warmup` | bool | 是否在插件启动时预热缓存。启用此项可以提高首次查询的性能。 |
 | `cache_worker_threads` | int | 用于处理异步缓存更新的线程数量。 |
 | `cleanup_interval_seconds` | int | 清理过期临时权限的时间间隔（秒）。 |
+| `default_group` | string | 默认权限组名称。未显式分配任何组的玩家将自动拥有该组权限；留空 `""` 表示禁用默认组。 |
 
 ## 📖 核心概念
 
@@ -90,6 +92,9 @@
 | `/ba 删除权限组 <组名>` | 删除一个已存在的权限组。 |
 | `/ba 设置权限组继承 <子组名> <父组名>` | 使一个组继承另一个组的权限。 |
 | `/ba 移除权限组继承 <子组名> <父组名>` | 移除两个组之间的继承关系。 |
+| `/ba 查看默认权限组` | 查看当前默认权限组（`/ba group default`）。 |
+| `/ba 设置默认权限组 <组名>` | 设置默认权限组并保存到配置（`/ba group default <组名>`）。 |
+| `/ba 清除默认权限组` | 禁用默认权限组并保存到配置（`/ba group cleardefault`）。 |
 
 ### 权限节点管理
 
