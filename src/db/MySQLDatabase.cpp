@@ -220,17 +220,9 @@ bool MySQLDatabase::executePrepared(const std::string& sql, const SqlParams& par
         unsigned int error_code = mysql_stmt_errno(stmt); // 获取错误代码
         recordConnectionError(error_code);
         std::string error_msg = mysql_stmt_error(stmt); // 获取错误消息
-        if (error_code == 1062) { // ER_DUP_ENTRY 表示重复键
-            logger.warn("MySQL executePrepared 重复条目已忽略: {}", error_msg);
-            lastWriteChanged_ = false;
-            // 将重复键错误视为 INSERT IGNORE 语义的成功
-            mysql_stmt_close(stmt);
-            return true; // 即使执行因重复而失败，也返回 true
-        } else {
-            logger.error("MySQL mysql_stmt_execute 失败 (代码 {}): {}", error_code, error_msg);
-            mysql_stmt_close(stmt);
-            return false; // 对其他错误返回 false
-        }
+        logger.error("MySQL mysql_stmt_execute 失败 (代码 {}): {}", error_code, error_msg);
+        mysql_stmt_close(stmt);
+        return false;
     }
 
     lastWriteChanged_ = mysql_stmt_affected_rows(stmt) > 0;

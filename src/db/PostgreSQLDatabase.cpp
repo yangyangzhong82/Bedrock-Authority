@@ -7,6 +7,7 @@
 #include <string> // 确保包含 string 头文件
 #include <algorithm> // 确保包含 algorithm 头文件
 #include <functional> // 确保包含 functional 头文件
+#include <cctype>
 
 using namespace std; // 引入 std 命名空间
 using namespace ll::mod; // 引入 ll::mod 命名空间
@@ -16,12 +17,63 @@ static string replacePlaceholders(const string& sql) {
     string result;
     result.reserve(sql.size());
     int index = 1;
-    for (char c : sql) {
-        if (c == '?') {
+    auto isIdentifierChar = [](unsigned char c) {
+        return std::isalnum(c) || c == '_' || c == '$' || c >= 128;
+    };
+    for (size_t i = 0; i < sql.size();) {
+        size_t start = i;
+        if (sql[i] == '\'' || sql[i] == '"') {
+            char quote = sql[i++];
+            bool escapeString = quote == '\'' && start > 0
+                && (sql[start - 1] == 'E' || sql[start - 1] == 'e')
+                && (start == 1 || !isIdentifierChar(sql[start - 2]));
+            while (i < sql.size()) {
+                char c = sql[i++];
+                if (escapeString && c == '\\' && i < sql.size()) {
+                    ++i;
+                } else if (c == quote) {
+                    if (i < sql.size() && sql[i] == quote) ++i;
+                    else break;
+                }
+            }
+        } else if (sql.compare(i, 2, "--") == 0) {
+            i = sql.find_first_of("\r\n", i + 2);
+            if (i == string::npos) i = sql.size();
+        } else if (sql.compare(i, 2, "/*") == 0) {
+            i += 2;
+            int depth = 1;
+            while (i < sql.size() && depth > 0) {
+                if (sql.compare(i, 2, "/*") == 0) {
+                    ++depth;
+                    i += 2;
+                } else if (sql.compare(i, 2, "*/") == 0) {
+                    --depth;
+                    i += 2;
+                } else {
+                    ++i;
+                }
+            }
+        } else if (sql[i] == '$' && (i == 0 || !isIdentifierChar(sql[i - 1]))) {
+            // PostgreSQL dollar-quoted strings: $$...$$ or $tag$...$tag$.
+            size_t end = i + 1;
+            if (end < sql.size() && !std::isdigit(static_cast<unsigned char>(sql[end]))) {
+                while (end < sql.size() && sql[end] != '$' && isIdentifierChar(sql[end])) ++end;
+            }
+            if (end < sql.size() && sql[end] == '$') {
+                string delimiter = sql.substr(i, end - i + 1);
+                size_t closing = sql.find(delimiter, end + 1);
+                i = closing == string::npos ? sql.size() : closing + delimiter.size();
+            } else {
+                ++i;
+            }
+        } else if (sql[i] == '?') {
             result += '$' + to_string(index++);
+            ++i;
+            continue;
         } else {
-            result += c;
+            ++i;
         }
+        result.append(sql, start, i - start);
     }
     return result;
 }
@@ -38,8 +90,10 @@ PostgreSQLDatabase::PostgreSQLDatabase(const string& host,
     auto& logger = NativeMod::current()->getLogger();
     logger.info("正在初始化 PostgreSQL 连接到 {}:{} 数据库={} 用户={}", host, port, database, user);
 
-    string conninfo = "host=" + host + " port=" + to_string(port) + " dbname=" + database + " user=" + user + " password=" + password;
-    conn_ = PQconnectdb(conninfo.c_str());
+    string portString = to_string(port);
+    const char* keywords[] = {"host", "port", "dbname", "user", "password", nullptr};
+    const char* values[] = {host.c_str(), portString.c_str(), database.c_str(), user.c_str(), password.c_str(), nullptr};
+    conn_ = PQconnectdbParams(keywords, values, 0);
 
     if (PQstatus(conn_) != CONNECTION_OK) {
         string err = PQerrorMessage(conn_);
@@ -266,7 +320,7 @@ std::string PostgreSQLDatabase::getInClausePlaceholders(size_t count) const {
     }
     std::string placeholders;
     for (size_t i = 0; i < count; ++i) {
-        placeholders += "$" + std::to_string(i + 1);
+        placeholders += "?";
         if (i < count - 1) {
             placeholders += ", ";
         }
@@ -295,7 +349,7 @@ PostgreSQLDatabase::fetchDirectPermissionsOfGroups(const std::vector<std::string
         return result;
     }
 
-    // PostgreSQL 使用 $1, $2, ... 作为占位符
+    // 使用统一的 ? 占位符，由 queryPrepared 转换为 PostgreSQL 编号。
     std::string sql = "SELECT group_id, permission_rule FROM group_permissions WHERE group_id IN ("
                     + getInClausePlaceholders(groupIds.size()) + ");";
 
