@@ -652,7 +652,7 @@ std::unordered_map<std::string, GroupDetails> PermissionStorage::fetchGroupDetai
     auto                           rows         = m_db->queryPrepared(sql, namesVec);
 
     for (const auto& row : rows) {
-        if (row.size() >= 4 && !row[0].empty() && !row[1].empty() && !row[2].empty() && !row[3].empty()) {
+        if (row.size() >= 4 && !row[0].empty() && !row[1].empty() && !row[3].empty()) {
             try {
                 int priority = std::stoi(row[3]);
                 groupDetailsMap[row[1]] = GroupDetails(row[0], row[1], row[2], priority);

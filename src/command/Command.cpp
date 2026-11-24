@@ -101,7 +101,7 @@ void RegisterCommands() {
         .text("创建权限组")
         .required("权限组id")
         .execute([&](CommandOrigin const& origin, CommandOutput& output, 创建权限组 const& param, ::Command const&) {
-            bool ok = pm.createGroup(param.权限组id, "A");
+            bool ok = pm.createGroup(param.权限组id);
             if (ok) {
                 output.success("已创建权限组: " + param.权限组id);
             } else {

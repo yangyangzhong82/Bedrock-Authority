@@ -46,7 +46,7 @@ struct GroupDetails {
     std::string description;
     int         priority;
     bool        isValid = false;
-    std::optional<long long> expirationTime; // 新增字段：过期时间戳 (Unix epoch milliseconds)
+    std::optional<long long> expirationTime; // Unix 时间戳（秒）
 
     GroupDetails() = default;
 

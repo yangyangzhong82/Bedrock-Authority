@@ -1,22 +1,24 @@
 #pragma once
 
-#include "permission/PermissionData.h"  
-#include "permission/PermissionManager.h" 
-#include <memory>                       
-#include <regex>                          
-#include <string>                         
-#include <vector>                         
+#include "permission/PermissionData.h"
+#include "permission/PermissionManager.h"
+#include <map>
+#include <memory>
+#include <mutex>
+#include <regex>
+#include <set>
+#include <string>
+#include <vector>
 
 
 namespace BA {
 namespace db {
-class IDatabase; 
+class IDatabase;
 }
 namespace permission {
 namespace internal {
-class PermissionStorage;     
-class PermissionCache;       
-class AsyncCacheInvalidator; 
+class PermissionStorage;
+class PermissionCache;
 } // namespace internal
 } // namespace permission
 } // namespace BA
@@ -295,14 +297,21 @@ private:
      *        此方法会从存储层加载数据并填充到缓存中，以提高后续查询性能。
      */
     void populateAllCaches();
-
+    std::vector<CompiledPermissionRule> compilePermissionsForGroups(
+        const std::set<std::string>& relevantGroupNames,
+        std::map<std::string, bool>  effectiveState
+    );
+    void invalidateGroupDerivedCaches(const std::string& groupName);
+    void invalidateGroupDerivedCaches(const std::set<std::string>& affectedGroups);
+    void invalidatePlayerCaches(const std::string& playerUuid);
 
     // 使用 unique_ptr 来管理内部组件的生命周期，确保资源自动释放
-    std::unique_ptr<internal::PermissionStorage>     m_storage;     // 权限存储组件
-    std::unique_ptr<internal::PermissionCache>       m_cache;       // 权限缓存组件
-    std::unique_ptr<internal::AsyncCacheInvalidator> m_invalidator; // 异步缓存失效器组件
+    std::unique_ptr<internal::PermissionStorage> m_storage; // 权限存储组件
+    std::unique_ptr<internal::PermissionCache>   m_cache;   // 权限缓存组件
 
-    bool m_initialized = false; // 标记权限管理器是否已初始化
+    // 仅串行化继承图结构写操作（增删继承/删组），读路径无锁竞争且靠缓存 epoch 防陈旧回填。
+    std::mutex m_graphWriteMutex;
+    bool       m_initialized = false; // 标记权限管理器是否已初始化
 };
 
 } // namespace permission

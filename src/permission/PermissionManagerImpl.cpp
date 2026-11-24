@@ -2,7 +2,6 @@
 #include "db/IDatabase.h"                     // 包含数据库接口
 #include "ll/api/io/Logger.h"                 // 包含日志库
 #include "ll/api/mod/NativeMod.h"             // 包含原生模块接口
-#include "permission/AsyncCacheInvalidator.h" // 包含异步缓存失效器
 #include "permission/PermissionCache.h"       // 包含权限缓存
 #include "permission/PermissionStorage.h"     // 包含权限存储
 #include "permission/events/PlayerJoinGroupEvent.h" // 包含玩家加入组事件
@@ -10,6 +9,7 @@
 #include "permission/events/GroupPermissionChangeEvent.h" // 包含组权限变更事件
 #include <algorithm>                          // 包含算法库
 #include <functional>                         // 包含函数对象库
+#include <mutex>
 #include <ll/api/event/EventBus.h>            // 包含事件总线
 
 
@@ -76,22 +76,31 @@ bool PermissionManager::PermissionManagerImpl::init(db::IDatabase* db, bool enab
         return false;
     }
 
+    (void)threadPoolSize; // 保留参数以维持 ABI 兼容；缓存改为同步失效 + epoch 校验
     try {
-        // 创建权限存储、缓存和异步缓存失效器实例
-        m_storage     = make_unique<internal::PermissionStorage>(db);
-        m_cache       = make_unique<internal::PermissionCache>();
-        m_invalidator = make_unique<internal::AsyncCacheInvalidator>(*m_cache, *m_storage);
+        // 创建权限存储和缓存实例
+        m_storage = make_unique<internal::PermissionStorage>(db);
+        m_cache   = make_unique<internal::PermissionCache>();
 
         // 确保数据库表存在
         m_storage->ensureTables();
 
-        // 如果启用预热，则填充所有缓存
+        // 继承图和默认权限均为权威内存索引，即使关闭预热也需全量加载。
+        auto parentToChildren = m_storage->fetchAllInheritance();
+        unordered_map<string, set<string>> childToParents;
+        for (const auto& [parent, children] : parentToChildren) {
+            for (const auto& child : children) {
+                childToParents[child].insert(parent);
+            }
+        }
+        m_cache->populateInheritance(std::move(parentToChildren), std::move(childToParents));
+        m_cache->populateAllPermissionDefaults(m_storage->fetchAllPermissionDefaults());
+
+        // 如果启用预热，则填充组映射和组权限派生缓存
         if (enableWarmup) {
             populateAllCaches();
         }
 
-        // 启动异步缓存失效器
-        m_invalidator->start(threadPoolSize);
         m_initialized = true;
         ::ll::mod::NativeMod::current()->getLogger().info("权限管理器初始化成功。");
         return true;
@@ -108,11 +117,8 @@ bool PermissionManager::PermissionManagerImpl::init(db::IDatabase* db, bool enab
  */
 void PermissionManager::PermissionManagerImpl::shutdown() {
     if (!m_initialized) {
-        // 如果未初始化，则直接返回
         return;
     }
-    // 停止异步缓存失效器
-    m_invalidator->stop();
     m_initialized = false;
     ::ll::mod::NativeMod::current()->getLogger().info("权限管理器已关闭。");
 }
@@ -131,24 +137,9 @@ void PermissionManager::PermissionManagerImpl::populateAllCaches() {
     
     // 批量获取所有组名及其 ID
     std::unordered_map<std::string, std::string> groupNameMap = m_storage->fetchGroupIdsByNames(groupNamesSet);
+    const size_t                                 groupCount   = groupNameMap.size();
     m_cache->populateAllGroups(std::move(groupNameMap));
-    logger.debug("已使用 {} 个条目填充组名缓存。", groupNameMap.size()); // 使用 map 大小确保准确性
-
-    // 填充继承缓存
-    auto                               parentToChildren = m_storage->fetchAllInheritance();
-    unordered_map<string, set<string>> childToParents;
-    for (const auto& pair : parentToChildren) {
-        const string& parent = pair.first;
-        for (const string& child : pair.second) {
-            childToParents[child].insert(parent);
-        }
-    }
-    m_cache->populateInheritance(std::move(parentToChildren), std::move(childToParents));
-    logger.debug("已填充继承缓存。");
-
-    // 填充权限默认值缓存
-    m_cache->populateAllPermissionDefaults(m_storage->fetchAllPermissionDefaults());
-    logger.debug("已填充权限默认值缓存。");
+    logger.debug("已使用 {} 个条目填充组名缓存。", groupCount);
 
     // 组权限缓存由 getPermissionsOfGroup 按需填充
     // 玩家权限和组缓存也是按需填充
@@ -174,17 +165,90 @@ std::string PermissionManager::PermissionManagerImpl::getCachedGroupId(const std
     // 1. 检查缓存中是否存在组ID
     auto cachedId = m_cache->findGroupId(groupName);
     if (cachedId) {
-        return *cachedId; // 缓存命中，直接返回
+        return *cachedId;
     }
 
-    // 2. 缓存未命中，从存储层查询组ID
-    std::string idFromDb = m_storage->fetchGroupIdByName(groupName);
+    // 2. 缓存未命中，记录版本后从存储层查询，防止删组后回填旧ID
+    const uint64_t epoch    = m_cache->groupMappingEpoch();
+    std::string    idFromDb = m_storage->fetchGroupIdByName(groupName);
 
-    // 3. 如果在存储层找到，则将其存储到缓存中
+    // 3. 如果在存储层找到且版本未变，则回填缓存
     if (!idFromDb.empty()) {
-        m_cache->storeGroup(groupName, idFromDb);
+        m_cache->storeGroupIfEpoch(groupName, idFromDb, epoch);
     }
     return idFromDb;
+}
+
+std::vector<CompiledPermissionRule>
+PermissionManager::PermissionManagerImpl::compilePermissionsForGroups(
+    const std::set<std::string>& relevantGroupNames,
+    std::map<std::string, bool>  effectiveState
+) {
+    if (!relevantGroupNames.empty()) {
+        auto                      relevantGroupsMap = m_storage->fetchGroupDetailsByNames(relevantGroupNames);
+        std::vector<GroupDetails> relevantGroups;
+        std::vector<std::string>  relevantGroupIds;
+        relevantGroups.reserve(relevantGroupsMap.size());
+        relevantGroupIds.reserve(relevantGroupsMap.size());
+
+        for (const auto& name : relevantGroupNames) {
+            auto it = relevantGroupsMap.find(name);
+            if (it != relevantGroupsMap.end()) {
+                relevantGroups.push_back(it->second);
+                relevantGroupIds.push_back(it->second.id);
+            }
+        }
+
+        std::sort(relevantGroups.begin(), relevantGroups.end(), [](const auto& a, const auto& b) {
+            return a.priority < b.priority;
+        });
+
+        auto allDirectPermissions = m_storage->fetchDirectPermissionsOfGroups(relevantGroupIds);
+        for (const auto& group : relevantGroups) {
+            auto it = allDirectPermissions.find(group.id);
+            if (it != allDirectPermissions.end()) {
+                for (const auto& rule : it->second) {
+                    bool        isNegated = rule.starts_with("-");
+                    std::string baseName  = isNegated ? rule.substr(1) : rule;
+                    if (baseName.empty()) continue;
+                    effectiveState[baseName] = !isNegated;
+                }
+            }
+        }
+    }
+
+    std::vector<CompiledPermissionRule> finalPerms;
+    finalPerms.reserve(effectiveState.size());
+    for (const auto& [pattern, state] : effectiveState) {
+        try {
+            finalPerms.emplace_back(pattern, wildcardToRegex(pattern), state);
+        } catch (const std::regex_error& e) {
+            ::ll::mod::NativeMod::current()->getLogger().error("权限模式 '{}' 无效: {}", pattern, e.what());
+        }
+    }
+
+    std::sort(finalPerms.begin(), finalPerms.end(), [](const auto& a, const auto& b) {
+        return a.pattern.length() > b.pattern.length();
+    });
+
+    return finalPerms;
+}
+
+void PermissionManager::PermissionManagerImpl::invalidateGroupDerivedCaches(const std::string& groupName) {
+    invalidateGroupDerivedCaches(m_cache->getChildGroupsRecursive(groupName));
+}
+
+void PermissionManager::PermissionManagerImpl::invalidateGroupDerivedCaches(
+    const std::set<std::string>& affectedGroups
+) {
+    m_cache->invalidateGroupPermissionsForGroups(affectedGroups);
+    m_cache->invalidatePlayerPermissionsForGroups(affectedGroups);
+}
+
+void PermissionManager::PermissionManagerImpl::invalidatePlayerCaches(const std::string& playerUuid) {
+    // 必须先失效玩家组缓存再失效玩家权限缓存，保证并发权限计算无法用旧组缓存回填新权限缓存。
+    m_cache->invalidatePlayerGroups(playerUuid);
+    m_cache->invalidatePlayerPermissions(playerUuid);
 }
 
 // --- 公共 API 实现 ---
@@ -203,9 +267,7 @@ bool PermissionManager::PermissionManagerImpl::registerPermission(
 ) {
     if (m_storage->upsertPermission(name, description, defaultValue)) {
         m_cache->storePermissionDefault(name, defaultValue);
-        // 权限注册或更新后，需要使所有组和玩家的权限缓存失效
-        m_invalidator->enqueueTask({CacheInvalidationTaskType::ALL_GROUPS_MODIFIED, ""});
-        m_invalidator->enqueueTask({CacheInvalidationTaskType::ALL_PLAYERS_MODIFIED, ""});
+        m_cache->invalidateAllPlayerPermissions();
         return true;
     }
     return false;
@@ -241,7 +303,7 @@ bool PermissionManager::PermissionManagerImpl::createGroup(
     string groupId;
     if (m_storage->createGroup(groupName, description, groupId) && !groupId.empty()) {
         m_cache->storeGroup(groupName, groupId);
-        // 新组创建时，无需使缓存失效，因为它还没有权限或玩家。
+        m_cache->invalidateGroupPermissions(groupName);
         return true;
     }
     return false;
@@ -253,24 +315,21 @@ bool PermissionManager::PermissionManagerImpl::createGroup(
  * @return 如果删除成功则返回 true，否则返回 false。
  */
 bool PermissionManager::PermissionManagerImpl::deleteGroup(const std::string& groupName) {
-    string groupId = getCachedGroupId(groupName);
+    std::lock_guard graphLock(m_graphWriteMutex);
+    string          groupId = getCachedGroupId(groupName);
     if (groupId.empty()) {
         return false; // 组不存在
     }
 
-    // 使与此组相关的所有继承缓存失效
-    auto parents  = m_cache->getAllAncestorGroups(groupName);
-    auto children = m_cache->getChildGroupsRecursive(groupName);
+    const auto affectedGroups = m_cache->getChildGroupsRecursive(groupName);
+    if (!m_storage->deleteGroup(groupId)) return false;
 
-    if (m_storage->deleteGroup(groupId)) {
-        // 从数据库删除后使缓存失效
-        m_cache->invalidateGroup(groupName);
-        // 将所有相关组及其玩家的缓存失效任务加入队列
-        for (const auto& child : children)
-            m_invalidator->enqueueTask({CacheInvalidationTaskType::GROUP_MODIFIED, child});
-        return true;
-    }
-    return false;
+    m_cache->removeGroupFromInheritance(groupName);
+    m_cache->invalidateGroup(groupName);
+    // 先失效玩家组缓存，再失效组权限与玩家权限缓存
+    m_cache->invalidatePlayerGroupsForGroup(groupName);
+    invalidateGroupDerivedCaches(affectedGroups);
+    return true;
 }
 
 /**
@@ -309,7 +368,11 @@ bool PermissionManager::PermissionManagerImpl::updateGroupDescription(
     const std::string& groupName,
     const std::string& newDescription
 ) {
-    return m_storage->updateGroupDescription(groupName, newDescription);
+    if (m_storage->updateGroupDescription(groupName, newDescription)) {
+        m_cache->invalidatePlayerGroupsForGroup(groupName);
+        return true;
+    }
+    return false;
 }
 
 /**
@@ -350,10 +413,11 @@ bool PermissionManager::PermissionManagerImpl::addPermissionToGroup(
     }
 
     if (m_storage->addPermissionToGroup(groupId, permissionRule)) {
-        // 组权限修改后，需要使该组的权限缓存失效
-        m_invalidator->enqueueTask({CacheInvalidationTaskType::GROUP_MODIFIED, groupName});
-        
-        ll::event::EventBus::getInstance().publish(event::GroupPermissionChangeAfterEvent(groupNameForEvent, permissionRuleForEvent, isAddForEvent));
+        invalidateGroupDerivedCaches(groupName);
+
+        ll::event::EventBus::getInstance().publish(
+            event::GroupPermissionChangeAfterEvent(groupNameForEvent, permissionRuleForEvent, isAddForEvent)
+        );
         return true;
     }
     return false;
@@ -388,10 +452,11 @@ bool PermissionManager::PermissionManagerImpl::removePermissionFromGroup(
     }
 
     if (m_storage->removePermissionFromGroup(groupId, permissionRule)) {
-        // 组权限修改后，需要使该组的权限缓存失效
-        m_invalidator->enqueueTask({CacheInvalidationTaskType::GROUP_MODIFIED, groupName});
-        
-        ll::event::EventBus::getInstance().publish(event::GroupPermissionChangeAfterEvent(groupNameForEvent, permissionRuleForEvent, isAddForEvent));
+        invalidateGroupDerivedCaches(groupName);
+
+        ll::event::EventBus::getInstance().publish(
+            event::GroupPermissionChangeAfterEvent(groupNameForEvent, permissionRuleForEvent, isAddForEvent)
+        );
         return true;
     }
     return false;
@@ -417,68 +482,21 @@ PermissionManager::PermissionManagerImpl::getDirectPermissionsOfGroup(const std:
 std::vector<CompiledPermissionRule>
 PermissionManager::PermissionManagerImpl::getPermissionsOfGroup(const std::string& groupName) {
     // 1. 检查缓存
-    auto cachedPerms = m_cache->findGroupPermissions(groupName);
-    if (cachedPerms) {
-        return *cachedPerms; // 缓存命中，直接返回
+    if (auto cachedPerms = m_cache->findGroupPermissions(groupName)) {
+        return *cachedPerms;
     }
 
-    // 2. 缓存未命中，计算权限
-    // 获取所有祖先组的名称
+    // 2. 缓存未命中，先记录版本再查图与数据库，避免并发写后回填陈旧结果
+    const uint64_t epoch = m_cache->groupPermissionsEpoch();
+    if (getCachedGroupId(groupName).empty()) {
+        return {}; // 不为不存在的组写入空缓存
+    }
+
     std::set<std::string> ancestorNames = m_cache->getAllAncestorGroups(groupName);
-    // 批量获取所有相关组的详情
-    std::unordered_map<std::string, GroupDetails> relevantGroupsMap = m_storage->fetchGroupDetailsByNames(ancestorNames);
-    std::vector<GroupDetails>                relevantGroups;
-    std::vector<std::string>                 relevantGroupIds; // 用于批量查询权限
-    for (const auto& name : ancestorNames) {
-        auto it = relevantGroupsMap.find(name);
-        if (it != relevantGroupsMap.end()) {
-            relevantGroups.push_back(it->second);
-            relevantGroupIds.push_back(it->second.id);
-        }
-    }
+    auto                  finalPerms    = compilePermissionsForGroups(ancestorNames, {});
 
-    // 根据优先级对相关组进行排序
-    std::sort(relevantGroups.begin(), relevantGroups.end(), [](const auto& a, const auto& b) {
-        return a.priority < b.priority;
-    });
-
-    // 批量获取所有相关组的直接权限
-    std::unordered_map<std::string, std::vector<std::string>> allDirectPermissions =
-        m_storage->fetchDirectPermissionsOfGroups(relevantGroupIds);
-
-    // 计算最终的有效权限状态
-    std::map<std::string, bool> effectiveState;
-    for (const auto& group : relevantGroups) {
-        // 从批量查询结果中获取当前组的权限
-        auto it = allDirectPermissions.find(group.id);
-        if (it != allDirectPermissions.end()) {
-            const auto& rules = it->second;
-            for (const auto& rule : rules) {
-                bool        isNegated = rule.starts_with("-"); // 检查是否是负向权限
-                std::string baseName  = isNegated ? rule.substr(1) : rule; // 获取权限基础名称
-                if (baseName.empty()) continue;
-                effectiveState[baseName] = !isNegated; // 设置权限的有效状态
-            }
-        }
-    }
-
-    // 将有效权限转换为编译后的权限规则
-    std::vector<CompiledPermissionRule> finalPerms;
-    for (const auto& [pattern, state] : effectiveState) {
-        try {
-            finalPerms.emplace_back(pattern, wildcardToRegex(pattern), state);
-        } catch (const std::regex_error& e) {
-            ::ll::mod::NativeMod::current()->getLogger().error("权限模式 ", pattern, e.what());
-        }
-    }
-
-    // 根据模式长度对权限进行排序（长模式优先）
-    std::sort(finalPerms.begin(), finalPerms.end(), [](const auto& a, const auto& b) {
-        return a.pattern.length() > b.pattern.length();
-    });
-
-    // 3. 存储到缓存并返回
-    m_cache->storeGroupPermissions(groupName, finalPerms);
+    // 3. 版本匹配时回填缓存
+    m_cache->storeGroupPermissions(groupName, finalPerms, epoch);
     return finalPerms;
 }
 
@@ -514,13 +532,11 @@ size_t PermissionManager::PermissionManagerImpl::addPermissionsToGroup(
 
         if (m_storage->addPermissionToGroup(groupId, rule)) {
             successCount++;
-            ll::event::EventBus::getInstance().publish(event::GroupPermissionChangeAfterEvent(groupNameForEvent, permissionRuleForEvent, isAddForEvent));
+            invalidateGroupDerivedCaches(groupName);
+            ll::event::EventBus::getInstance().publish(
+                event::GroupPermissionChangeAfterEvent(groupNameForEvent, permissionRuleForEvent, isAddForEvent)
+            );
         }
-    }
-
-    if (successCount > 0) {
-        // 组权限修改后，需要使该组的权限缓存失效
-        m_invalidator->enqueueTask({CacheInvalidationTaskType::GROUP_MODIFIED, groupName});
     }
     return successCount;
 }
@@ -557,13 +573,11 @@ size_t PermissionManager::PermissionManagerImpl::removePermissionsFromGroup(
 
         if (m_storage->removePermissionFromGroup(groupId, rule)) {
             successCount++;
-            ll::event::EventBus::getInstance().publish(event::GroupPermissionChangeAfterEvent(groupNameForEvent, permissionRuleForEvent, isAddForEvent));
+            invalidateGroupDerivedCaches(groupName);
+            ll::event::EventBus::getInstance().publish(
+                event::GroupPermissionChangeAfterEvent(groupNameForEvent, permissionRuleForEvent, isAddForEvent)
+            );
         }
-    }
-
-    if (successCount > 0) {
-        // 组权限修改后，需要使该组的权限缓存失效
-        m_invalidator->enqueueTask({CacheInvalidationTaskType::GROUP_MODIFIED, groupName});
     }
     return successCount;
 }
@@ -578,8 +592,8 @@ bool PermissionManager::PermissionManagerImpl::addGroupInheritance(
     const std::string& groupName,
     const std::string& parentGroupName
 ) {
-    // 检查是否尝试继承自身或形成循环
-    if (groupName == parentGroupName || m_cache->hasPath(parentGroupName, groupName)) {
+    std::lock_guard graphLock(m_graphWriteMutex);
+    if (!m_cache->canAddInheritance(groupName, parentGroupName)) {
         return false; // 检测到循环或无效继承
     }
     string groupId       = getCachedGroupId(groupName);
@@ -588,8 +602,7 @@ bool PermissionManager::PermissionManagerImpl::addGroupInheritance(
 
     if (m_storage->addGroupInheritance(groupId, parentGroupId)) {
         m_cache->addInheritance(groupName, parentGroupName);
-        // 组继承关系修改后，需要使子组的权限缓存失效
-        m_invalidator->enqueueTask({CacheInvalidationTaskType::GROUP_MODIFIED, groupName});
+        invalidateGroupDerivedCaches(groupName);
         return true;
     }
     return false;
@@ -605,14 +618,14 @@ bool PermissionManager::PermissionManagerImpl::removeGroupInheritance(
     const std::string& groupName,
     const std::string& parentGroupName
 ) {
-    string groupId       = getCachedGroupId(groupName);
-    string parentGroupId = getCachedGroupId(parentGroupName);
+    std::lock_guard graphLock(m_graphWriteMutex);
+    string          groupId       = getCachedGroupId(groupName);
+    string          parentGroupId = getCachedGroupId(parentGroupName);
     if (groupId.empty() || parentGroupId.empty()) return false; // 组或父组不存在
 
     if (m_storage->removeGroupInheritance(groupId, parentGroupId)) {
         m_cache->removeInheritance(groupName, parentGroupName);
-        // 组继承关系修改后，需要使子组的权限缓存失效
-        m_invalidator->enqueueTask({CacheInvalidationTaskType::GROUP_MODIFIED, groupName});
+        invalidateGroupDerivedCaches(groupName);
         return true;
     }
     return false;
@@ -635,22 +648,7 @@ std::vector<std::string> PermissionManager::PermissionManagerImpl::getAllAncesto
  * @return 包含直接父组名称的向量。
  */
 std::vector<std::string> PermissionManager::PermissionManagerImpl::getDirectParentGroups(const std::string& groupName) {
-    std::vector<std::string> directParents;
-    std::string              groupId = getCachedGroupId(groupName);
-    if (groupId.empty()) {
-        return directParents; // 组不存在
-    }
-    // 从存储层获取直接父组的ID
-    std::vector<std::string> parentGroupIds = m_storage->fetchDirectParentGroupIds(groupId);
-    // 批量将ID转换为组名
-    std::unordered_map<std::string, std::string> idToNameMap = m_storage->fetchGroupNamesByIds(parentGroupIds);
-    for (const auto& parentId : parentGroupIds) {
-        auto it = idToNameMap.find(parentId);
-        if (it != idToNameMap.end()) {
-            directParents.push_back(it->second);
-        }
-    }
-    return directParents;
+    return m_cache->getDirectParentGroups(groupName);
 }
 
 /**
@@ -661,8 +659,8 @@ std::vector<std::string> PermissionManager::PermissionManagerImpl::getDirectPare
  */
 bool PermissionManager::PermissionManagerImpl::setGroupPriority(const std::string& groupName, int priority) {
     if (m_storage->updateGroupPriority(groupName, priority)) {
-        // 组优先级修改后，需要使该组的权限缓存失效
-        m_invalidator->enqueueTask({CacheInvalidationTaskType::GROUP_MODIFIED, groupName});
+        m_cache->invalidatePlayerGroupsForGroup(groupName);
+        invalidateGroupDerivedCaches(groupName);
         return true;
     }
     return false;
@@ -731,11 +729,12 @@ bool PermissionManager::PermissionManagerImpl::addPlayerToGroup(
     }
 
     if (m_storage->addPlayerToGroup(playerUuid, groupId, expiryTimestamp)) {
-        // 玩家组关系修改后，需要使该玩家的权限和组缓存失效
-        m_invalidator->enqueueTask({CacheInvalidationTaskType::PLAYER_GROUP_CHANGED, playerUuid});
-        
+        invalidatePlayerCaches(playerUuid);
+
         // 触发 PlayerJoinGroupAfterEvent
-        ll::event::EventBus::getInstance().publish(event::PlayerJoinGroupAfterEvent(playerUuidForEvent, groupNameForEvent, expiryTimestampForEvent));
+        ll::event::EventBus::getInstance().publish(
+            event::PlayerJoinGroupAfterEvent(playerUuidForEvent, groupNameForEvent, expiryTimestampForEvent)
+        );
         return true;
     }
     return false;
@@ -768,10 +767,11 @@ bool PermissionManager::PermissionManagerImpl::removePlayerFromGroup(
     }
 
     if (m_storage->removePlayerFromGroup(playerUuid, groupId)) {
-        // 玩家组关系修改后，需要使该玩家的权限缓存失效
-        m_invalidator->enqueueTask({CacheInvalidationTaskType::PLAYER_GROUP_CHANGED, playerUuid});
-        
-        ll::event::EventBus::getInstance().publish(event::PlayerLeaveGroupAfterEvent(playerUuidForEvent, groupNameForEvent));
+        invalidatePlayerCaches(playerUuid);
+
+        ll::event::EventBus::getInstance().publish(
+            event::PlayerLeaveGroupAfterEvent(playerUuidForEvent, groupNameForEvent)
+        );
         return true;
     }
     return false;
@@ -785,13 +785,14 @@ bool PermissionManager::PermissionManagerImpl::removePlayerFromGroup(
 std::vector<GroupDetails>
 PermissionManager::PermissionManagerImpl::getPlayerGroupsWithPriorities(const std::string& playerUuid) {
     // 1. 检查缓存
-    auto cachedGroups = m_cache->findPlayerGroups(playerUuid);
-    if (cachedGroups) {
-        return *cachedGroups; // 缓存命中，直接返回
+    if (auto cachedGroups = m_cache->findPlayerGroups(playerUuid)) {
+        return *cachedGroups;
     }
-    // 2. 缓存未命中，从数据库获取并存储到缓存
-    auto groupsFromDb = m_storage->fetchPlayerGroupsWithDetails(playerUuid);
-    m_cache->storePlayerGroups(playerUuid, groupsFromDb);
+
+    // 2. 缓存未命中，先记录版本再查库，版本一致时回填
+    const uint64_t epoch        = m_cache->playerGroupsEpoch();
+    auto           groupsFromDb = m_storage->fetchPlayerGroupsWithDetails(playerUuid);
+    m_cache->storePlayerGroups(playerUuid, groupsFromDb, epoch);
     return groupsFromDb;
 }
 
@@ -838,86 +839,41 @@ std::vector<std::string> PermissionManager::PermissionManagerImpl::getPlayersInG
 std::vector<CompiledPermissionRule>
 PermissionManager::PermissionManagerImpl::getAllPermissionsForPlayer(const std::string& playerUuid) {
     // 1. 检查缓存
-    auto cachedPerms = m_cache->findPlayerPermissions(playerUuid);
-    if (cachedPerms) {
-        return *cachedPerms; // 缓存命中，直接返回
+    if (auto cachedPerms = m_cache->findPlayerPermissions(playerUuid)) {
+        return *cachedPerms;
     }
 
-    // 2. 缓存未命中，计算权限
-    map<string, bool> effectiveState;
-    // 2.1. 添加默认权限
-    // 尝试从缓存获取默认权限，如果未命中则从存储层获取并填充缓存
-    auto defaults = m_cache->getAllPermissionDefaults(); // 使用公共方法获取缓存
-    if (defaults.empty()) { // 如果缓存为空，则从存储层加载
+    // 2. 在读取任何数据前记录版本，防止并发写失效后回填陈旧结果
+    const uint64_t permEpoch = m_cache->playerPermissionsEpoch();
+
+    // 2.1 添加默认权限（init 已全量加载；未加载时按需补全）
+    if (!m_cache->arePermissionDefaultsLoaded()) {
         m_cache->populateAllPermissionDefaults(m_storage->fetchAllPermissionDefaults());
-        defaults = m_cache->getAllPermissionDefaults(); // 重新获取填充后的缓存
     }
-    for (const auto& [name, state] : defaults) {
+    map<string, bool> effectiveState;
+    for (const auto& [name, state] : m_cache->getAllPermissionDefaults()) {
         if (state) {
             effectiveState[name] = true;
         }
     }
 
-    // 2.2. 获取所有相关组（直接所属和继承）及其权限
-    auto        playerGroups = getPlayerGroupsWithPriorities(playerUuid);
-    std::set<std::string> allRelevantGroupNames;
+    // 2.2 获取所有相关组（直接所属和继承）及其权限
+    auto                     playerGroups = getPlayerGroupsWithPriorities(playerUuid);
+    std::optional<long long> earliestExpiry;
+    std::set<std::string>    allRelevantGroupNames;
     for (const auto& group : playerGroups) {
+        if (group.expirationTime && (!earliestExpiry || *group.expirationTime < *earliestExpiry)) {
+            earliestExpiry = group.expirationTime;
+        }
         auto ancestors = m_cache->getAllAncestorGroups(group.name);
         allRelevantGroupNames.insert(ancestors.begin(), ancestors.end());
     }
 
-    // 批量获取所有相关组的详情
-    std::unordered_map<std::string, GroupDetails> allRelevantGroupsMap = m_storage->fetchGroupDetailsByNames(allRelevantGroupNames);
-    std::vector<GroupDetails>                allRelevantGroupsDetails;
-    std::vector<std::string>                 allRelevantGroupIds; // 用于批量查询权限
-    for (const auto& name : allRelevantGroupNames) {
-        auto it = allRelevantGroupsMap.find(name);
-        if (it != allRelevantGroupsMap.end()) {
-            allRelevantGroupsDetails.push_back(it->second);
-            allRelevantGroupIds.push_back(it->second.id);
-        }
-    }
+    auto finalPerms = compilePermissionsForGroups(allRelevantGroupNames, std::move(effectiveState));
 
-    // 根据优先级对所有相关组进行排序
-    std::sort(allRelevantGroupsDetails.begin(), allRelevantGroupsDetails.end(), [](const auto& a, const auto& b) {
-        return a.priority < b.priority;
-    });
-
-    // 批量获取所有相关组的直接权限
-    std::unordered_map<std::string, std::vector<std::string>> allDirectPermissions =
-        m_storage->fetchDirectPermissionsOfGroups(allRelevantGroupIds);
-
-    // 应用组权限
-    for (const auto& group : allRelevantGroupsDetails) {
-        auto it = allDirectPermissions.find(group.id);
-        if (it != allDirectPermissions.end()) {
-            const auto& rules = it->second;
-            for (const auto& rule : rules) {
-                bool        isNegated = rule.starts_with("-");
-                std::string baseName  = isNegated ? rule.substr(1) : rule;
-                if (baseName.empty()) continue;
-                effectiveState[baseName] = !isNegated;
-            }
-        }
-    }
-
-    // 将有效权限转换为编译后的权限规则
-    std::vector<CompiledPermissionRule> finalPerms;
-    for (const auto& [pattern, state] : effectiveState) {
-        try {
-            finalPerms.emplace_back(pattern, wildcardToRegex(pattern), state);
-        } catch (const std::regex_error& e) {
-            ::ll::mod::NativeMod::current()->getLogger().error("权限模式 ", pattern, e.what());
-        }
-    }
-
-    // 根据模式长度对权限进行排序（长模式优先）
-    std::sort(finalPerms.begin(), finalPerms.end(), [](const auto& a, const auto& b) {
-        return a.pattern.length() > b.pattern.length();
-    });
-
-    // 3. 存储到缓存并返回
-    m_cache->storePlayerPermissions(playerUuid, finalPerms);
+    // 3. 版本匹配时回填缓存
+    std::vector<std::string> sourceGroups(allRelevantGroupNames.begin(), allRelevantGroupNames.end());
+    m_cache->storePlayerPermissions(playerUuid, finalPerms, earliestExpiry, std::move(sourceGroups), permEpoch);
     return finalPerms;
 }
 
@@ -938,18 +894,12 @@ bool PermissionManager::PermissionManagerImpl::hasPermission(
         }
     }
 
-    // 如果没有匹配到特定规则，则回退到权限的默认值
-    auto defaultValue = m_cache->findPermissionDefault(permissionNode);
-    if (defaultValue) {
-        return *defaultValue; // 缓存中找到默认值
+    // 如果没有匹配到特定规则，则回退到权限的默认值（权威索引已在 init 时全量加载）
+    if (!m_cache->arePermissionDefaultsLoaded()) {
+        m_cache->populateAllPermissionDefaults(m_storage->fetchAllPermissionDefaults());
     }
-
-    // 如果缓存中没有，则双重检查数据库（这种情况应该很少发生）
-    auto defaults = m_storage->fetchAllPermissionDefaults();
-    auto it       = defaults.find(permissionNode);
-    if (it != defaults.end()) {
-        m_cache->storePermissionDefault(permissionNode, it->second); // 存储到缓存
-        return it->second;
+    if (auto defaultValue = m_cache->findPermissionDefault(permissionNode)) {
+        return *defaultValue;
     }
 
     return false; // 如果权限未注册，则默认拒绝
@@ -975,8 +925,7 @@ size_t PermissionManager::PermissionManagerImpl::addPlayerToGroups(
     }
     size_t count = m_storage->addPlayerToGroups(playerUuid, groupInfos);
     if (count > 0) {
-        // 玩家组关系修改后，需要使该玩家的权限缓存失效
-        m_invalidator->enqueueTask({CacheInvalidationTaskType::PLAYER_GROUP_CHANGED, playerUuid});
+        invalidatePlayerCaches(playerUuid);
     }
     return count;
 }
@@ -1001,8 +950,7 @@ size_t PermissionManager::PermissionManagerImpl::removePlayerFromGroups(
     }
     size_t count = m_storage->removePlayerFromGroups(playerUuid, groupIds);
     if (count > 0) {
-        // 玩家组关系修改后，需要使该玩家的权限缓存失效
-        m_invalidator->enqueueTask({CacheInvalidationTaskType::PLAYER_GROUP_CHANGED, playerUuid});
+        invalidatePlayerCaches(playerUuid);
     }
     return count;
 }
@@ -1015,7 +963,7 @@ void PermissionManager::PermissionManagerImpl::runPeriodicCleanup() {
     if (!affectedPlayers.empty()) {
         logger.debug("权限清理任务完成。已删除 {} 条过期记录，并使受影响玩家的缓存失效。", affectedPlayers.size());
         for (const auto& playerUuid : affectedPlayers) {
-            m_invalidator->enqueueTask({CacheInvalidationTaskType::PLAYER_GROUP_CHANGED, playerUuid});
+            invalidatePlayerCaches(playerUuid);
         }
     } else {
         logger.debug("权限清理任务：没有过期的记录需要删除。");
@@ -1068,8 +1016,7 @@ bool PermissionManager::PermissionManagerImpl::setPlayerGroupExpirationTime(
 
     // 调用存储层更新
     if (m_storage->updatePlayerGroupExpirationTime(playerUuid, groupId, expiryTimestamp)) {
-        // 更新成功后，使该玩家的缓存失效，以便下次获取时能得到最新数据
-        m_invalidator->enqueueTask({CacheInvalidationTaskType::PLAYER_GROUP_CHANGED, playerUuid});
+        invalidatePlayerCaches(playerUuid);
         return true;
     }
 

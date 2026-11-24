@@ -1,365 +1,497 @@
-
 #include "permission/PermissionCache.h"
+#include <algorithm>
 #include <chrono>
+#include <cstddef>
+#include <mutex>
 #include <queue>
+#include <utility>
 
 namespace BA {
 namespace permission {
 namespace internal {
 
-using namespace std; // 使用标准命名空间
+namespace {
 
-
-// 查找组ID
-// 参数: groupName - 组名
-// 返回: 组ID (如果找到)
-optional<string> PermissionCache::findGroupId(const string& groupName) {
-    shared_lock<shared_mutex> lock(m_groupNameMutex);                // 获取读锁
-    auto                      it = m_groupNameCache.find(groupName); // 在组名缓存中查找
-    if (it != m_groupNameCache.end()) {
-        return it->second; // 返回找到的组ID
-    }
-    return nullopt; // 未找到则返回空
+long long currentUnixSeconds() {
+    return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
+        .count();
 }
 
-// 查找组名
-// 参数: groupId - 组ID
-// 返回: 组名 (如果找到)
-optional<string> PermissionCache::findGroupName(const string& groupId) {
-    shared_lock<shared_mutex> lock(m_groupIdMutex);              // 获取读锁
-    auto                      it = m_groupIdCache.find(groupId); // 在组ID缓存中查找
+template <typename Map>
+void evictOldestToTarget(Map& cache, size_t targetSize) {
+    if (cache.size() <= targetSize) return;
+
+    std::vector<std::pair<uint64_t, typename Map::key_type>> order;
+    order.reserve(cache.size());
+    for (const auto& [key, entry] : cache) {
+        order.emplace_back(entry.insertedSeq, key);
+    }
+
+    const size_t evictCount = cache.size() - targetSize;
+    std::nth_element(
+        order.begin(),
+        order.begin() + static_cast<std::ptrdiff_t>(evictCount),
+        order.end(),
+        [](const auto& a, const auto& b) { return a.first < b.first; }
+    );
+    for (size_t i = 0; i < evictCount; ++i) {
+        cache.erase(order[i].second);
+    }
+}
+
+} // namespace
+
+// --- 组名 <-> 组ID 映射 ---
+
+uint64_t PermissionCache::groupMappingEpoch() const {
+    std::shared_lock lock(m_groupMappingMutex);
+    return m_groupMappingEpoch;
+}
+
+std::optional<std::string> PermissionCache::findGroupId(const std::string& groupName) const {
+    std::shared_lock lock(m_groupMappingMutex);
+    auto             it = m_groupNameCache.find(groupName);
+    if (it != m_groupNameCache.end()) {
+        return it->second;
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> PermissionCache::findGroupName(const std::string& groupId) const {
+    std::shared_lock lock(m_groupMappingMutex);
+    auto             it = m_groupIdCache.find(groupId);
     if (it != m_groupIdCache.end()) {
-        return it->second; // 返回找到的组名
+        return it->second;
     }
-    return nullopt; // 未找到则返回空
+    return std::nullopt;
 }
 
-// 存储组名和组ID
-// 参数: groupName - 组名, groupId - 组ID
-void PermissionCache::storeGroup(const string& groupName, const string& groupId) {
-    unique_lock<shared_mutex> nameLock(m_groupNameMutex); // 获取组名缓存的写锁
-    unique_lock<shared_mutex> idLock(m_groupIdMutex);     // 获取组ID缓存的写锁
+void PermissionCache::storeGroup(const std::string& groupName, const std::string& groupId) {
+    std::unique_lock lock(m_groupMappingMutex);
+    ++m_groupMappingEpoch;
 
-    // 如果旧的组名存在，先移除旧的ID映射
-    auto it = m_groupNameCache.find(groupName);
-    if (it != m_groupNameCache.end()) {
-        m_groupIdCache.erase(it->second); // 移除旧的ID到名称的映射
+    if (auto it = m_groupNameCache.find(groupName); it != m_groupNameCache.end()) {
+        m_groupIdCache.erase(it->second);
+    }
+    if (auto it = m_groupIdCache.find(groupId); it != m_groupIdCache.end()) {
+        m_groupNameCache.erase(it->second);
     }
 
-    m_groupNameCache[groupName] = groupId;   // 存储组名到组ID的映射
-    m_groupIdCache[groupId]     = groupName; // 存储组ID到组名的映射
+    m_groupNameCache[groupName] = groupId;
+    m_groupIdCache[groupId]     = groupName;
 }
 
-// 使组缓存失效
-// 参数: groupName - 组名
-void PermissionCache::invalidateGroup(const string& groupName) {
-    unique_lock<shared_mutex> nameLock(m_groupNameMutex); // 获取组名缓存的写锁
-    unique_lock<shared_mutex> idLock(m_groupIdMutex);     // 获取组ID缓存的写锁
-
-    auto it = m_groupNameCache.find(groupName);
-    if (it != m_groupNameCache.end()) {
-        m_groupIdCache.erase(it->second); // 移除ID到名称的映射
-        m_groupNameCache.erase(it);       // 移除名称到ID的映射
-    }
-}
-
-// 批量填充所有组
-// 参数: groupNameMap - 组名到组ID的映射
-void PermissionCache::populateAllGroups(unordered_map<string, string>&& groupNameMap) {
-    unique_lock<shared_mutex> nameLock(m_groupNameMutex); // 获取组名缓存的写锁
-    unique_lock<shared_mutex> idLock(m_groupIdMutex);     // 获取组ID缓存的写锁
-
-    m_groupNameCache.clear(); // 清空组名缓存
-    m_groupIdCache.clear();   // 清空组ID缓存
-
-    for (auto& pair : groupNameMap) {
-        m_groupNameCache[pair.first] = pair.second; // 填充组名到组ID的映射
-        m_groupIdCache[pair.second]  = pair.first;  // 填充组ID到组名的映射
-    }
-}
-
-// 获取所有组
-// 返回: 所有组的映射关系
-const std::unordered_map<std::string, std::string>& PermissionCache::getAllGroups() const {
-    shared_lock<shared_mutex> lock(m_groupNameMutex); // 获取读锁
-    return m_groupNameCache;                          // 返回组名缓存
-}
-
-// --- 玩家权限缓存 ---
-
-// 查找玩家权限
-// 参数: playerUuid - 玩家UUID
-// 返回: 编译后的权限规则列表 (如果找到)
-optional<vector<CompiledPermissionRule>> PermissionCache::findPlayerPermissions(const string& playerUuid) {
-    shared_lock<shared_mutex> lock(m_playerPermissionsMutex);                 // 获取读锁
-    auto                      it = m_playerPermissionsCache.find(playerUuid); // 在玩家权限缓存中查找
-    if (it != m_playerPermissionsCache.end()) {
-        return it->second; // 返回找到的权限规则
-    }
-    return nullopt; // 未找到则返回空
-}
-
-// 存储玩家权限
-// 参数: playerUuid - 玩家UUID, permissions - 权限规则列表
-void PermissionCache::storePlayerPermissions(
-    const string&                         playerUuid,
-    const vector<CompiledPermissionRule>& permissions
+void PermissionCache::storeGroupIfEpoch(
+    const std::string& groupName,
+    const std::string& groupId,
+    uint64_t           expectedEpoch
 ) {
-    unique_lock<shared_mutex> lock(m_playerPermissionsMutex); // 获取写锁
-    m_playerPermissionsCache[playerUuid] = permissions;       // 存储玩家权限
+    std::unique_lock lock(m_groupMappingMutex);
+    if (m_groupMappingEpoch != expectedEpoch) return;
+
+    if (auto it = m_groupNameCache.find(groupName); it != m_groupNameCache.end()) {
+        m_groupIdCache.erase(it->second);
+    }
+    if (auto it = m_groupIdCache.find(groupId); it != m_groupIdCache.end()) {
+        m_groupNameCache.erase(it->second);
+    }
+
+    m_groupNameCache[groupName] = groupId;
+    m_groupIdCache[groupId]     = groupName;
 }
 
-// 使玩家权限缓存失效
-// 参数: playerUuid - 玩家UUID
-void PermissionCache::invalidatePlayerPermissions(const string& playerUuid) {
-    unique_lock<shared_mutex> lock(m_playerPermissionsMutex); // 获取写锁
-    m_playerPermissionsCache.erase(playerUuid);               // 移除玩家权限
+void PermissionCache::invalidateGroup(const std::string& groupName) {
+    std::unique_lock lock(m_groupMappingMutex);
+    ++m_groupMappingEpoch;
+
+    auto it = m_groupNameCache.find(groupName);
+    if (it != m_groupNameCache.end()) {
+        m_groupIdCache.erase(it->second);
+        m_groupNameCache.erase(it);
+    }
 }
 
-// 使所有玩家权限缓存失效
+void PermissionCache::populateAllGroups(std::unordered_map<std::string, std::string>&& groupNameMap) {
+    std::unique_lock lock(m_groupMappingMutex);
+    ++m_groupMappingEpoch;
+
+    m_groupNameCache.clear();
+    m_groupIdCache.clear();
+
+    for (auto& [name, id] : groupNameMap) {
+        m_groupNameCache[name] = id;
+        m_groupIdCache[id]     = name;
+    }
+}
+
+std::unordered_map<std::string, std::string> PermissionCache::getAllGroups() const {
+    std::shared_lock lock(m_groupMappingMutex);
+    return m_groupNameCache;
+}
+
+// --- 玩家权限派生缓存 ---
+
+uint64_t PermissionCache::playerPermissionsEpoch() const {
+    std::shared_lock lock(m_playerPermissionsMutex);
+    return m_playerPermsEpoch;
+}
+
+std::optional<std::vector<CompiledPermissionRule>>
+PermissionCache::findPlayerPermissions(const std::string& playerUuid) const {
+    std::shared_lock lock(m_playerPermissionsMutex);
+    auto             it = m_playerPermissionsCache.find(playerUuid);
+    if (it != m_playerPermissionsCache.end()) {
+        const auto& entry = it->second;
+        if (!entry.earliestExpiry || currentUnixSeconds() < *entry.earliestExpiry) {
+            return entry.rules;
+        }
+    }
+    return std::nullopt;
+}
+
+void PermissionCache::storePlayerPermissions(
+    const std::string&                         playerUuid,
+    const std::vector<CompiledPermissionRule>& permissions,
+    std::optional<long long>                   earliestExpiry,
+    std::vector<std::string>                   sourceGroups,
+    uint64_t                                   expectedEpoch
+) {
+    std::unique_lock lock(m_playerPermissionsMutex);
+    if (m_playerPermsEpoch != expectedEpoch) return;
+
+    if (!m_playerPermissionsCache.contains(playerUuid) && m_playerPermissionsCache.size() >= kMaxPlayerCacheEntries) {
+        const auto now = currentUnixSeconds();
+        std::erase_if(m_playerPermissionsCache, [now](const auto& kv) {
+            return kv.second.earliestExpiry && now >= *kv.second.earliestExpiry;
+        });
+        evictOldestToTarget(m_playerPermissionsCache, (kMaxPlayerCacheEntries * 3) / 4);
+    }
+
+    m_playerPermissionsCache.insert_or_assign(
+        playerUuid,
+        PlayerPermissionEntry{permissions, earliestExpiry, std::move(sourceGroups), ++m_playerPermsSeq}
+    );
+}
+
+void PermissionCache::invalidatePlayerPermissions(const std::string& playerUuid) {
+    std::unique_lock lock(m_playerPermissionsMutex);
+    ++m_playerPermsEpoch;
+    m_playerPermissionsCache.erase(playerUuid);
+}
+
+void PermissionCache::invalidatePlayerPermissionsForGroups(const std::set<std::string>& affectedGroups) {
+    std::unique_lock lock(m_playerPermissionsMutex);
+    ++m_playerPermsEpoch;
+    if (affectedGroups.empty()) return;
+
+    std::erase_if(m_playerPermissionsCache, [&affectedGroups](const auto& kv) {
+        return std::any_of(
+            kv.second.sourceGroups.begin(),
+            kv.second.sourceGroups.end(),
+            [&affectedGroups](const std::string& g) { return affectedGroups.contains(g); }
+        );
+    });
+}
+
 void PermissionCache::invalidateAllPlayerPermissions() {
-    unique_lock<shared_mutex> lock(m_playerPermissionsMutex); // 获取写锁
-    m_playerPermissionsCache.clear();                         // 清空玩家权限缓存
+    std::unique_lock lock(m_playerPermissionsMutex);
+    ++m_playerPermsEpoch;
+    m_playerPermissionsCache.clear();
 }
 
-// --- 玩家组缓存 ---
+// --- 玩家组派生缓存 ---
 
-// 查找玩家组
-// 参数: playerUuid - 玩家UUID
-// 返回: 组详情列表 (如果找到)
-optional<vector<GroupDetails>> PermissionCache::findPlayerGroups(const string& playerUuid) {
-    shared_lock<shared_mutex> lock(m_playerGroupsMutex);                 // 获取读锁
-    auto                      it = m_playerGroupsCache.find(playerUuid); // 在玩家组缓存中查找
+uint64_t PermissionCache::playerGroupsEpoch() const {
+    std::shared_lock lock(m_playerGroupsMutex);
+    return m_playerGroupsEpoch;
+}
+
+std::optional<std::vector<GroupDetails>> PermissionCache::findPlayerGroups(const std::string& playerUuid) const {
+    std::shared_lock lock(m_playerGroupsMutex);
+    auto             it = m_playerGroupsCache.find(playerUuid);
     if (it != m_playerGroupsCache.end()) {
-        // 缓存命中，现在检查条目是否过期
-        long long currentTime =
-            std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
-                .count();
-        vector<GroupDetails> validGroups;
-        for (const auto& group : it->second) {
+        const auto                currentTime = currentUnixSeconds();
+        std::vector<GroupDetails> validGroups;
+        validGroups.reserve(it->second.groups.size());
+        for (const auto& group : it->second.groups) {
             if (!group.expirationTime.has_value() || group.expirationTime.value() > currentTime) {
                 validGroups.push_back(group);
             }
         }
-
-        if (!validGroups.empty()) {
-            return validGroups; // 返回未过期的组
-        }
-        // 如果所有组都已过期，则视为缓存未命中
+        return validGroups;
     }
-    return nullopt; // 未找到或所有组都已过期
+    return std::nullopt;
 }
 
-// 存储玩家组
-// 参数: playerUuid - 玩家UUID, groups - 组详情列表
-void PermissionCache::storePlayerGroups(const string& playerUuid, const vector<GroupDetails>& groups) {
-    unique_lock<shared_mutex> lock(m_playerGroupsMutex); // 获取写锁
-    m_playerGroupsCache[playerUuid] = groups;            // 存储玩家组
+void PermissionCache::storePlayerGroups(
+    const std::string&               playerUuid,
+    const std::vector<GroupDetails>& groups,
+    uint64_t                         expectedEpoch
+) {
+    std::unique_lock lock(m_playerGroupsMutex);
+    if (m_playerGroupsEpoch != expectedEpoch) return;
+
+    if (!m_playerGroupsCache.contains(playerUuid) && m_playerGroupsCache.size() >= kMaxPlayerCacheEntries) {
+        const auto now = currentUnixSeconds();
+        std::erase_if(m_playerGroupsCache, [now](const auto& kv) {
+            const auto& gs = kv.second.groups;
+            return !gs.empty() && std::all_of(gs.begin(), gs.end(), [now](const GroupDetails& g) {
+                       return g.expirationTime.has_value() && *g.expirationTime <= now;
+                   });
+        });
+        evictOldestToTarget(m_playerGroupsCache, (kMaxPlayerCacheEntries * 3) / 4);
+    }
+
+    m_playerGroupsCache.insert_or_assign(playerUuid, PlayerGroupEntry{groups, ++m_playerGroupsSeq});
 }
 
-// 使玩家组缓存失效
-// 参数: playerUuid - 玩家UUID
-void PermissionCache::invalidatePlayerGroups(const string& playerUuid) {
-    unique_lock<shared_mutex> lock(m_playerGroupsMutex); // 获取写锁
-    m_playerGroupsCache.erase(playerUuid);               // 移除玩家组
+void PermissionCache::invalidatePlayerGroups(const std::string& playerUuid) {
+    std::unique_lock lock(m_playerGroupsMutex);
+    ++m_playerGroupsEpoch;
+    m_playerGroupsCache.erase(playerUuid);
 }
 
-// --- 组权限缓存 ---
+void PermissionCache::invalidatePlayerGroupsForGroup(const std::string& groupName) {
+    std::unique_lock lock(m_playerGroupsMutex);
+    ++m_playerGroupsEpoch;
 
-// 查找组权限
-// 参数: groupName - 组名
-// 返回: 编译后的权限规则列表 (如果找到)
-optional<vector<CompiledPermissionRule>> PermissionCache::findGroupPermissions(const string& groupName) {
-    shared_lock<shared_mutex> lock(m_groupPermissionsMutex);                // 获取读锁
-    auto                      it = m_groupPermissionsCache.find(groupName); // 在组权限缓存中查找
+    std::erase_if(m_playerGroupsCache, [&groupName](const auto& kv) {
+        return std::any_of(
+            kv.second.groups.begin(),
+            kv.second.groups.end(),
+            [&groupName](const GroupDetails& g) { return g.name == groupName; }
+        );
+    });
+}
+
+void PermissionCache::invalidateAllPlayerGroups() {
+    std::unique_lock lock(m_playerGroupsMutex);
+    ++m_playerGroupsEpoch;
+    m_playerGroupsCache.clear();
+}
+
+// --- 组权限派生缓存 ---
+
+uint64_t PermissionCache::groupPermissionsEpoch() const {
+    std::shared_lock lock(m_groupPermissionsMutex);
+    return m_groupPermsEpoch;
+}
+
+std::optional<std::vector<CompiledPermissionRule>>
+PermissionCache::findGroupPermissions(const std::string& groupName) const {
+    std::shared_lock lock(m_groupPermissionsMutex);
+    auto             it = m_groupPermissionsCache.find(groupName);
     if (it != m_groupPermissionsCache.end()) {
-        return it->second; // 返回找到的权限规则
+        return it->second.rules;
     }
-    return nullopt; // 未找到则返回空
+    return std::nullopt;
 }
 
-// 存储组权限
-// 参数: groupName - 组名, permissions - 权限规则列表
 void PermissionCache::storeGroupPermissions(
-    const string&                         groupName,
-    const vector<CompiledPermissionRule>& permissions
+    const std::string&                         groupName,
+    const std::vector<CompiledPermissionRule>& permissions,
+    uint64_t                                   expectedEpoch
 ) {
-    unique_lock<shared_mutex> lock(m_groupPermissionsMutex); // 获取写锁
-    m_groupPermissionsCache[groupName] = permissions;        // 存储组权限
+    std::unique_lock lock(m_groupPermissionsMutex);
+    if (m_groupPermsEpoch != expectedEpoch) return;
+
+    if (!m_groupPermissionsCache.contains(groupName) && m_groupPermissionsCache.size() >= kMaxGroupPermCacheEntries) {
+        evictOldestToTarget(m_groupPermissionsCache, (kMaxGroupPermCacheEntries * 3) / 4);
+    }
+
+    m_groupPermissionsCache.insert_or_assign(groupName, GroupPermissionEntry{permissions, ++m_groupPermsSeq});
 }
 
-// 使组权限缓存失效
-// 参数: groupName - 组名
-void PermissionCache::invalidateGroupPermissions(const string& groupName) {
-    unique_lock<shared_mutex> lock(m_groupPermissionsMutex); // 获取写锁
-    m_groupPermissionsCache.erase(groupName);                // 移除组权限
+void PermissionCache::invalidateGroupPermissions(const std::string& groupName) {
+    std::unique_lock lock(m_groupPermissionsMutex);
+    ++m_groupPermsEpoch;
+    m_groupPermissionsCache.erase(groupName);
 }
 
-// 使所有组权限缓存失效
+void PermissionCache::invalidateGroupPermissionsForGroups(const std::set<std::string>& groupNames) {
+    std::unique_lock lock(m_groupPermissionsMutex);
+    ++m_groupPermsEpoch;
+    for (const auto& name : groupNames) {
+        m_groupPermissionsCache.erase(name);
+    }
+}
+
 void PermissionCache::invalidateAllGroupPermissions() {
-    unique_lock<shared_mutex> lock(m_groupPermissionsMutex); // 获取写锁
-    m_groupPermissionsCache.clear();                         // 清空组权限缓存
+    std::unique_lock lock(m_groupPermissionsMutex);
+    ++m_groupPermsEpoch;
+    m_groupPermissionsCache.clear();
 }
 
-// --- 默认权限缓存 ---
+// --- 默认权限权威索引 ---
 
-// 查找默认权限
-// 参数: permissionName - 权限名
-// 返回: 默认值 (如果找到)
-optional<bool> PermissionCache::findPermissionDefault(const string& permissionName) {
-    shared_lock<shared_mutex> lock(m_permissionDefaultsMutex);                     // 获取读锁
-    auto                      it = m_permissionDefaultsCache.find(permissionName); // 在默认权限缓存中查找
+bool PermissionCache::arePermissionDefaultsLoaded() const {
+    std::shared_lock lock(m_permissionDefaultsMutex);
+    return m_permissionDefaultsLoaded;
+}
+
+std::optional<bool> PermissionCache::findPermissionDefault(const std::string& permissionName) const {
+    std::shared_lock lock(m_permissionDefaultsMutex);
+    auto             it = m_permissionDefaultsCache.find(permissionName);
     if (it != m_permissionDefaultsCache.end()) {
-        return it->second; // 返回找到的默认值
+        return it->second;
     }
-    return nullopt; // 未找到则返回空
+    return std::nullopt;
 }
 
-// 存储默认权限
-// 参数: permissionName - 权限名, defaultValue - 默认值
-void PermissionCache::storePermissionDefault(const string& permissionName, bool defaultValue) {
-    unique_lock<shared_mutex> lock(m_permissionDefaultsMutex); // 获取写锁
-    m_permissionDefaultsCache[permissionName] = defaultValue;  // 存储默认权限
+void PermissionCache::storePermissionDefault(const std::string& permissionName, bool defaultValue) {
+    std::unique_lock lock(m_permissionDefaultsMutex);
+    m_permissionDefaultsCache[permissionName] = defaultValue;
 }
 
-// 批量填充所有默认权限
-// 参数: defaultsMap - 默认权限映射
-void PermissionCache::populateAllPermissionDefaults(unordered_map<string, bool>&& defaultsMap) {
-    unique_lock<shared_mutex> lock(m_permissionDefaultsMutex); // 获取写锁
-    m_permissionDefaultsCache = std::move(defaultsMap);        // 移动赋值填充默认权限缓存
+void PermissionCache::populateAllPermissionDefaults(std::unordered_map<std::string, bool>&& defaultsMap) {
+    std::unique_lock lock(m_permissionDefaultsMutex);
+    m_permissionDefaultsCache  = std::move(defaultsMap);
+    m_permissionDefaultsLoaded = true;
 }
 
-// 获取所有默认权限
-// 返回: 所有默认权限的映射关系
-const std::unordered_map<std::string, bool>& PermissionCache::getAllPermissionDefaults() const {
-    shared_lock<shared_mutex> lock(m_permissionDefaultsMutex); // 获取读锁
-    return m_permissionDefaultsCache;                          // 返回默认权限缓存
+std::unordered_map<std::string, bool> PermissionCache::getAllPermissionDefaults() const {
+    std::shared_lock lock(m_permissionDefaultsMutex);
+    return m_permissionDefaultsCache;
 }
 
-// --- 继承缓存 ---
+// --- 继承图权威索引 ---
 
-// 填充继承关系
-// 参数: parentToChildren - 父组到子组的映射, childToParents - 子组到父组的映射
 void PermissionCache::populateInheritance(
-    unordered_map<string, set<string>>&& parentToChildren,
-    unordered_map<string, set<string>>&& childToParents
+    std::unordered_map<std::string, std::set<std::string>>&& parentToChildren,
+    std::unordered_map<std::string, std::set<std::string>>&& childToParents
 ) {
-    unique_lock<shared_mutex> lock(m_inheritanceMutex); // 获取写锁
-    m_parentToChildren = std::move(parentToChildren);   // 移动赋值父组到子组的映射
-    m_childToParents   = std::move(childToParents);     // 移动赋值子组到父组的映射
+    std::unique_lock lock(m_inheritanceMutex);
+    m_parentToChildren = std::move(parentToChildren);
+    m_childToParents   = std::move(childToParents);
 }
 
-// 添加继承关系
-// 参数: child - 子组, parent - 父组
-void PermissionCache::addInheritance(const string& child, const string& parent) {
-    unique_lock<shared_mutex> lock(m_inheritanceMutex); // 获取写锁
-    m_childToParents[child].insert(parent);             // 在子组到父组的映射中添加关系
-    m_parentToChildren[parent].insert(child);           // 在父组到子组的映射中添加关系
+void PermissionCache::addInheritance(const std::string& child, const std::string& parent) {
+    std::unique_lock lock(m_inheritanceMutex);
+    m_childToParents[child].insert(parent);
+    m_parentToChildren[parent].insert(child);
 }
 
-// 移除继承关系
-// 参数: child - 子组, parent - 父组
-void PermissionCache::removeInheritance(const string& child, const string& parent) {
-    unique_lock<shared_mutex> lock(m_inheritanceMutex); // 获取写锁
-    if (m_childToParents.count(child)) {                // 如果子组存在
-        m_childToParents[child].erase(parent);          // 移除子组到父组的映射
-        if (m_childToParents[child].empty()) {          // 如果子组的父组列表为空
-            m_childToParents.erase(child);              // 移除该子组
+void PermissionCache::removeInheritance(const std::string& child, const std::string& parent) {
+    std::unique_lock lock(m_inheritanceMutex);
+    if (auto it = m_childToParents.find(child); it != m_childToParents.end()) {
+        it->second.erase(parent);
+        if (it->second.empty()) {
+            m_childToParents.erase(it);
         }
     }
-    if (m_parentToChildren.count(parent)) {       // 如果父组存在
-        m_parentToChildren[parent].erase(child);  // 移除父组到子组的映射
-        if (m_parentToChildren[parent].empty()) { // 如果父组的子组列表为空
-            m_parentToChildren.erase(parent);     // 移除该父组
+    if (auto it = m_parentToChildren.find(parent); it != m_parentToChildren.end()) {
+        it->second.erase(child);
+        if (it->second.empty()) {
+            m_parentToChildren.erase(it);
         }
     }
 }
 
-// 检查是否存在路径
-// 参数: startNode - 起始节点, endNode - 结束节点
-// 返回: 如果存在路径则为true，否则为false
-bool PermissionCache::hasPath(const string& startNode, const string& endNode) const {
-    if (startNode == endNode) return true;              // 如果起始节点和结束节点相同，则存在路径
-    shared_lock<shared_mutex> lock(m_inheritanceMutex); // 获取读锁
+void PermissionCache::removeGroupFromInheritance(const std::string& groupName) {
+    std::unique_lock lock(m_inheritanceMutex);
+    auto removeEdges = [&](auto& adjacent, auto& reverse) {
+        auto node = adjacent.find(groupName);
+        if (node == adjacent.end()) return;
+        for (const auto& neighbor : node->second) {
+            if (auto rev = reverse.find(neighbor); rev != reverse.end()) {
+                rev->second.erase(groupName);
+                if (rev->second.empty()) {
+                    reverse.erase(rev);
+                }
+            }
+        }
+        adjacent.erase(node);
+    };
+    removeEdges(m_childToParents, m_parentToChildren);
+    removeEdges(m_parentToChildren, m_childToParents);
+}
 
-    queue<string> q;       // 广度优先搜索队列
-    set<string>   visited; // 已访问节点集合
+bool PermissionCache::canAddInheritance(const std::string& child, const std::string& parent) const {
+    if (child == parent) return false;
+    std::shared_lock lock(m_inheritanceMutex);
+    if (auto parents = m_childToParents.find(child);
+        parents != m_childToParents.end() && parents->second.contains(parent)) {
+        return false;
+    }
 
-    q.push(startNode);         // 将起始节点加入队列
-    visited.insert(startNode); // 将起始节点标记为已访问
+    std::queue<std::string> q;
+    std::set<std::string>   visited;
+
+    // 新边为 parent -> child，只有 child 已能到达 parent 时才会成环。
+    q.push(child);
+    visited.insert(child);
 
     while (!q.empty()) {
-        string current = q.front(); // 获取当前节点
-        q.pop();                    // 移除当前节点
+        std::string current = q.front();
+        q.pop();
 
-        auto it = m_parentToChildren.find(current); // 查找当前节点的子节点
+        auto it = m_parentToChildren.find(current);
         if (it != m_parentToChildren.end()) {
-            for (const auto& neighbor : it->second) {          // 遍历所有子节点
-                if (neighbor == endNode) return true;          // 如果找到结束节点，则存在路径
-                if (visited.find(neighbor) == visited.end()) { // 如果子节点未被访问
-                    visited.insert(neighbor);                  // 标记为已访问
-                    q.push(neighbor);                          // 加入队列
+            for (const auto& neighbor : it->second) {
+                if (neighbor == parent) return false;
+                if (visited.insert(neighbor).second) {
+                    q.push(neighbor);
                 }
             }
         }
     }
-    return false; // 未找到路径
+    return true;
 }
 
-// 获取所有祖先组
-// 参数: groupName - 组名
-// 返回: 所有祖先组的集合 (包括自身)
-set<string> PermissionCache::getAllAncestorGroups(const string& groupName) const {
-    shared_lock<shared_mutex> lock(m_inheritanceMutex); // 获取读锁
-    set<string>               ancestors;                // 祖先组集合
-    queue<string>             q;                        // 广度优先搜索队列
+std::vector<std::string> PermissionCache::getDirectParentGroups(const std::string& groupName) const {
+    std::shared_lock lock(m_inheritanceMutex);
+    auto             it = m_childToParents.find(groupName);
+    if (it == m_childToParents.end()) {
+        return {};
+    }
+    return std::vector<std::string>(it->second.begin(), it->second.end());
+}
 
-    q.push(groupName);           // 将当前组加入队列
-    ancestors.insert(groupName); // 将当前组标记为祖先
+std::set<std::string> PermissionCache::getAllAncestorGroups(const std::string& groupName) const {
+    std::shared_lock        lock(m_inheritanceMutex);
+    std::set<std::string>   ancestors;
+    std::queue<std::string> q;
+
+    q.push(groupName);
+    ancestors.insert(groupName);
 
     while (!q.empty()) {
-        string current = q.front();               // 获取当前节点
-        q.pop();                                  // 移除当前节点
-        auto it = m_childToParents.find(current); // 查找当前节点的父节点
+        std::string current = q.front();
+        q.pop();
+        auto it = m_childToParents.find(current);
         if (it != m_childToParents.end()) {
-            for (const auto& parent : it->second) {              // 遍历所有父节点
-                if (ancestors.find(parent) == ancestors.end()) { // 如果父节点未被访问
-                    ancestors.insert(parent);                    // 标记为祖先
-                    q.push(parent);                              // 加入队列
+            for (const auto& parent : it->second) {
+                if (ancestors.insert(parent).second) {
+                    q.push(parent);
                 }
             }
         }
     }
-    return ancestors; // 返回所有祖先组
+    return ancestors;
 }
 
-// 递归获取所有子组
-// 参数: groupName - 组名
-// 返回: 所有子组的集合 (包括自身)
-set<string> PermissionCache::getChildGroupsRecursive(const string& groupName) const {
-    shared_lock<shared_mutex> lock(m_inheritanceMutex); // 获取读锁
-    set<string>               children;                 // 子组集合
-    queue<string>             q;                        // 广度优先搜索队列
+std::set<std::string> PermissionCache::getChildGroupsRecursive(const std::string& groupName) const {
+    std::shared_lock        lock(m_inheritanceMutex);
+    std::set<std::string>   children;
+    std::queue<std::string> q;
 
-    q.push(groupName);          // 将当前组加入队列
-    children.insert(groupName); // 将当前组标记为子组
+    q.push(groupName);
+    children.insert(groupName);
 
     while (!q.empty()) {
-        string current = q.front();                 // 获取当前节点
-        q.pop();                                    // 移除当前节点
-        auto it = m_parentToChildren.find(current); // 查找当前节点的子节点
+        std::string current = q.front();
+        q.pop();
+        auto it = m_parentToChildren.find(current);
         if (it != m_parentToChildren.end()) {
-            for (const auto& child : it->second) {            // 遍历所有子节点
-                if (children.find(child) == children.end()) { // 如果子节点未被访问
-                    children.insert(child);                   // 标记为子组
-                    q.push(child);                            // 加入队列
+            for (const auto& child : it->second) {
+                if (children.insert(child).second) {
+                    q.push(child);
                 }
             }
         }
     }
-    return children; // 返回所有子组
+    return children;
 }
-
 
 } // namespace internal
 } // namespace permission
