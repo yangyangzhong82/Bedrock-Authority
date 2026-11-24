@@ -20,25 +20,8 @@ add_requires("levibuildscript")
 add_requires("sqlite3 3.53.0+0")
 add_requires("legacyremotecall")
 add_requires("drogon")
-option("with_mysql")
-    set_default(false)
-    set_showmenu(true)
-    set_description("Enable MySQL backend support")
-option_end()
-
-option("with_postgresql")
-    set_default(false)
-    set_showmenu(true)
-    set_description("Enable PostgreSQL backend support")
-option_end()
-
-if has_config("with_mysql") then
-    add_requires("mysql")
-end
-
-if has_config("with_postgresql") then
-    add_requires("postgresql")
-end
+add_requires("mysql")
+add_requires("postgresql")
 
 if not has_config("vs_runtime") then
     set_runtimes("MD")
@@ -72,19 +55,19 @@ target("Bedrock-Authority") -- Change this to your mod name.
         )
     end
     add_packages("levilamina", "sqlite3", "legacyremotecall", "drogon")
-    if has_config("with_mysql") then
-        add_packages("mysql")
-        add_defines("BA_ENABLE_MYSQL=1")
-    else
-        add_defines("BA_ENABLE_MYSQL=0")
-        remove_files("src/db/MySQLDatabase.cpp")
-    end
-    if has_config("with_postgresql") then
-        add_packages("postgresql")
-        add_defines("BA_ENABLE_POSTGRESQL=1")
-    else
-        add_defines("BA_ENABLE_POSTGRESQL=0")
-        remove_files("src/db/PostgreSQLDatabase.cpp")
+    add_packages("mysql", "postgresql")
+    add_defines("BA_ENABLE_MYSQL=1", "BA_ENABLE_POSTGRESQL=1")
+    if is_plat("windows") then
+        -- Load database client DLLs only when their backend is used. This lets
+        -- SQLite installations run without MySQL or PostgreSQL installed.
+        -- MySQL's client is linked statically; its OpenSSL DLLs are also delayed.
+        add_shflags(
+            "/DELAYLOAD:libpq.dll",
+            "/DELAYLOAD:libssl-1_1-x64.dll",
+            "/DELAYLOAD:libcrypto-1_1-x64.dll",
+            {force = true}
+        )
+        add_links("delayimp")
     end
     -- Fix jsoncpp conflict: bedrock_runtime_api.lib contains partial jsoncpp symbols that conflict with drogon's jsoncpp
     -- Solution: Remove jsoncpp from package links before prelink, then add it back after prelink
